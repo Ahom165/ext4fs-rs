@@ -445,8 +445,11 @@ pub fn cmd_format(rest: &[String]) {
     if let Err(e) = volume_ioctl(h, FSCTL_LOCK_VOLUME, 0) {
         ioctl_err_phrase(&e, "FSCTL_LOCK_VOLUME");
     }
-    if let Err(e) = volume_ioctl(h, FSCTL_DISMOUNT_VOLUME, 0) {
-        ioctl_err_phrase(&e, "FSCTL_DISMOUNT_VOLUME");
+    if volume_ioctl(h, FSCTL_DISMOUNT_VOLUME, 0).is_err() {
+        // Non bloquant : sur un volume brut (VHD/partition neuve, aucun FS
+        // monte), le dismount peut echouer. Le verrou exclusif obtenu
+        // ci-dessus suffit deja (aucun autre handle ouvert sur le volume).
+        eprintln!("note : dismount ignore (volume brut ?)");
     }
 
     // 4) Formatage par le moteur ext4-core
