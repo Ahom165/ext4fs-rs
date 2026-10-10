@@ -1,0 +1,9 @@
+# Configuration cargo du pilote kernel.
+#
+# wdk-build exige le CRT statique pour un pilote kernel (sinon erreur
+# StaticCrtNotEnabled dans le build script) : les fonctions CRT du noyau
+# sont fournies par la lib statique du WDK, pas par vcruntime.dll.
+# Cf. .cargo/config.toml du workspace officiel microsoft/windows-drivers-rs.
+
+[target.'cfg(all(target_arch = "x86_64", target_os = "windows"))']
+rustflags = ["-C", "target-feature=+crt-static"]
