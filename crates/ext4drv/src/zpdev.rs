@@ -249,16 +249,35 @@ impl DevBlockDevice {
                 ObDereferenceObject(fo as *mut c_void);
                 return Err(Error::Device(nd::st::UNSUCCESSFUL));
             }
-            // taille du volume : IOCTL_DISK_GET_LENGTH_INFO
+            // taille du volume : IOCTL_DISK_GET_LENGTH_INFO (0x0007_4450 =
+            // CTL_CODE(IOCTL_DISK_BASE=7, 0x114, BUFFERED, READ) ; l'ancien
+            // 0x74050 était GET_DRIVE_GEOMETRY — bug). Certains stacks de
+            // volume refusent GET_LENGTH_INFO (VHD Win11 Insider, erreur
+            // 0x1 côté user) : repli GET_DRIVE_GEOMETRY -> produit CHS
+            // (borne haute). Dernier recours : u64::MAX (bornes désactivées).
             let mut out: i64 = 0;
             let mut iosb = IO_STATUS_BLOCK::default();
-            let status = sync_devctrl(dev, 0x0007_4050, core::ptr::null_mut(), 0, &mut out as *mut i64 as *mut c_void, 8, &mut iosb);
-            // 0x00074050 = CTL_CODE(IOCTL_DISK_BASE=7, 0x14, BUFFERED, READ) GET_LENGTH_INFO
-            if status != 0 {
-                wdk::println!("ext4fsd: IOCTL_DISK_GET_LENGTH_INFO échoué {status:#x}");
-                // volume sans taille connue : bornes désactivées (0 = infini)
+            let mut size: u64 = u64::MAX;
+            let status = sync_devctrl(dev, 0x0007_4450, core::ptr::null_mut(), 0, &mut out as *mut i64 as *mut c_void, 8, &mut iosb);
+            if status == 0 && out > 0 {
+                size = out as u64;
+            } else {
+                wdk::println!("ext4fsd: GET_LENGTH_INFO refusé ({status:#x}), repli geometry");
+                let mut geo = [0u8; 24];
+                let mut giosb = IO_STATUS_BLOCK::default();
+                let gs = sync_devctrl(dev, 0x0007_0000, core::ptr::null_mut(), 0, geo.as_mut_ptr() as *mut c_void, 24, &mut giosb);
+                if gs == 0 {
+                    let cyl = i64::from_le_bytes(geo[0..8].try_into().unwrap()) as u64;
+                    let tpc = u32::from_le_bytes(geo[12..16].try_into().unwrap()) as u64;
+                    let spt = u32::from_le_bytes(geo[16..20].try_into().unwrap()) as u64;
+                    let bps = (u32::from_le_bytes(geo[20..24].try_into().unwrap()) as u64).max(512);
+                    size = cyl * tpc * spt * bps;
+                    wdk::println!("ext4fsd: taille volume via geometry = {size}");
+                } else {
+                    wdk::println!("ext4fsd: geometry refusée aussi ({gs:#x}) — bornes désactivées");
+                }
             }
-            Ok(DevBlockDevice { fo: fo as *mut c_void, dev, size: if out > 0 { out as u64 } else { u64::MAX }, read_only: false })
+            Ok(DevBlockDevice { fo: fo as *mut c_void, dev, size, read_only: false })
         }
     }
 

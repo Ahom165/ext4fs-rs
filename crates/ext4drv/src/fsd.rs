@@ -179,7 +179,10 @@ unsafe extern "system" fn fsctrl_fs_device(_device: *mut DEVICE_OBJECT, irp: PIR
     let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let minor: u8 = sp_minor(sp);
     match minor {
-        nd::MN_MOUNT_VOLUME => mount_volume(irp),
+        nd::MN_MOUNT_VOLUME => {
+            wdk::println!("ext4fsd: sonde de montage reçue (MN_MOUNT_VOLUME)");
+            mount_volume(irp)
+        }
         nd::MN_VERIFY_VOLUME => {
             // v1 : volume toujours considéré valide si le VCB existe
             let (vpb, _dev) = p_mount(sp);
@@ -197,6 +200,7 @@ unsafe extern "system" fn fsctrl_fs_device(_device: *mut DEVICE_OBJECT, irp: PIR
             nd::st::UNSUCCESSFUL
         }
         _ => {
+            wdk::println!("ext4fsd: FSCTL mineur inconnu sur device FS : {minor}");
             complete_irp(irp, nd::st::INVALID_DEVICE_REQUEST, 0);
             nd::st::INVALID_DEVICE_REQUEST
         }
@@ -209,17 +213,22 @@ unsafe extern "system" fn mount_volume(irp: PIRP) -> i32 {
     let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (vpb, real_dev) = p_mount(sp);
     if vpb.is_null() || real_dev.is_null() {
+        wdk::println!("ext4fsd: montage : VPB ou device réel nul");
         complete_irp(irp, nd::st::INVALID_PARAMETER, 0);
         return nd::st::INVALID_PARAMETER;
     }
 
-    // Nom NT du device réel (\Device\HarddiskVolumeN)
-    let name = query_device_name(real_dev);
-    if name.is_none() {
-        complete_irp(irp, nd::st::UNSUCCESSFUL, 0);
-        return nd::st::UNSUCCESSFUL;
-    }
-    let nt_name = name.unwrap();
+    // Nom NT du device réel (\Device\HarddiskVolumeN). Non bloquant : si
+    // ObQueryNameString échoue on monte quand même (sans notification du
+    // mount manager — la lettre déjà assignée, ex. par diskpart, reste
+    // en place). Avant : refus silencieux -> RawFS prenait le volume.
+    let nt_name = match query_device_name(real_dev) {
+        Some(n) => n,
+        None => {
+            wdk::println!("ext4fsd: ObQueryNameString échoué — montage sans notification mount manager");
+            Vec::new()
+        }
+    };
 
     // Ouverture du volume via un stream file object (PAS de chemin NT :
     // récursion de montage impossible), puis montage ext4 (replay journal).
@@ -332,8 +341,12 @@ unsafe extern "system" fn mount_volume(irp: PIRP) -> i32 {
     (*ext).volumes.push(vcb);
     ExReleaseFastMutex(&mut (*ext).mutex);
 
-    // mount manager : attribue la lettre de lecteur
-    let letter = notify_mount_manager(&nt_name);
+    // mount manager : attribue la lettre de lecteur (skippé si pas de nom)
+    let letter = if nt_name.is_empty() {
+        None
+    } else {
+        notify_mount_manager(&nt_name)
+    };
     if let Some(l) = &letter {
         (*vcb).dos_letter = Some(l.clone());
     }
