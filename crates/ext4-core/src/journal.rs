@@ -178,7 +178,7 @@ impl Journal {
         let has_csum = csum_v3 || incompat & FEAT_INCOMPAT_CSUM_V2 != 0;
         let seed = crate::crc::crc32c_update(0xFFFF_FFFF, &uuid);
         let head = rd32_be(&jsb, 0x58);
-        let mut j = Journal {
+        let j = Journal {
             jmap,
             maxlen,
             first,
@@ -413,7 +413,7 @@ impl Journal {
         if blocks.is_empty() {
             return Ok(());
         }
-        let total = self.maxlen;
+        let _total = self.maxlen;
         let seq = self.sequence;
         let bs = self.blocksize as usize;
         let tsize = self.tag_size();

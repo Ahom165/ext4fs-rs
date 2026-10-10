@@ -3,7 +3,6 @@
 use alloc::vec::Vec;
 
 use crate::crc::crc32c_update;
-use crate::error::{Error, Result};
 use crate::superblock::Superblock;
 use crate::util::*;
 

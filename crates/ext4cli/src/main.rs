@@ -42,13 +42,13 @@ impl FileDev {
 
 impl BlockDevice for FileDev {
     fn read_at(&mut self, off: u64, buf: &mut [u8]) -> ext4_core::Result<()> {
-        use ext4_core::error::{Error, Result};
+        use ext4_core::error::Error;
         self.f.seek(SeekFrom::Start(off)).map_err(|_| Error::Device(1))?;
         self.f.read_exact(buf).map_err(|_| Error::Device(2))?;
         Ok(())
     }
     fn write_at(&mut self, off: u64, buf: &[u8]) -> ext4_core::Result<()> {
-        use ext4_core::error::{Error, Result};
+        use ext4_core::error::Error;
         if self.ro {
             return Err(Error::ReadOnly);
         }

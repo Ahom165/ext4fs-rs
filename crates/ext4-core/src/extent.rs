@@ -43,7 +43,9 @@ pub trait ExtentCtx {
 fn eh_entries(buf: &[u8]) -> usize {
     crate::util::rd16_le(buf, 2) as usize
 }
+/// Réservé v3 : opérations de fusion/compactage d'extent tree.
 #[inline]
+#[allow(dead_code)]
 fn eh_max(buf: &[u8]) -> usize {
     crate::util::rd16_le(buf, 4) as usize
 }

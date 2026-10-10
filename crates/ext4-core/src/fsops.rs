@@ -3,7 +3,7 @@
 //! fichiers (extents + inline), création/suppression/lien, truncate.
 
 use crate::dir::{
-    self, DirBlockIter, DirEntry, DxRoot, DIRENT_TAIL_SIZE, EXT4_INDEX_FL, FT_DIR_CSUM,
+    self, DirBlockIter, DirEntry, DIRENT_TAIL_SIZE, EXT4_INDEX_FL, FT_DIR_CSUM,
 };
 use crate::error::{Error, Result};
 use crate::extent;
@@ -92,7 +92,7 @@ impl Filesystem {
         }
         let blocks = self.dir_data_blocks(dir)?;
         for (bi, &bno) in blocks.iter().enumerate() {
-            let bs = self.block_size() as usize;
+            let _bs = self.block_size() as usize;
             let blk = self.get_block(bno)?.clone();
             if bi == 0 && indexed {
                 // dx_root : uniquement "." et ".."
@@ -289,7 +289,7 @@ impl Filesystem {
             }
             match phys {
                 None => buf[done..done + n].fill(0), // trou
-                Some(p) if unwritten => buf[done..done + n].fill(0),
+                Some(_p) if unwritten => buf[done..done + n].fill(0),
                 Some(p) => {
                     if let Some(blk) = self.cache.get(&p) {
                         buf[done..done + n].copy_from_slice(&blk[in_block..in_block + n]);
@@ -1002,11 +1002,11 @@ impl Filesystem {
             self.resolve(old_path)?;
             return Ok(());
         }
-        let (mut old_parent, old_name) = self.resolve_parent(old_path)?;
+        let (old_parent, old_name) = self.resolve_parent(old_path)?;
         if old_name == b"." || old_name == b".." {
             return Err(Error::BadPath);
         }
-        let (mut new_parent, new_name) = self.resolve_parent(new_path)?;
+        let (new_parent, new_name) = self.resolve_parent(new_path)?;
         if new_name == b"." || new_name == b".." {
             return Err(Error::BadPath);
         }
@@ -1308,6 +1308,8 @@ impl Filesystem {
     }
 }
 
+/// Réservé v3 : réécriture récursive du dx tree.
+#[allow(dead_code)]
 fn rl_at(blk: &[u8], off: usize) -> u16 {
     crate::util::rd16_le(blk, off)
 }

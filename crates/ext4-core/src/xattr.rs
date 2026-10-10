@@ -5,8 +5,7 @@
 use crate::crc::crc32c_update;
 use crate::error::{Error, Result};
 use crate::fs::Filesystem;
-use crate::inode::{Inode, S_IFDIR, S_IFREG};
-use crate::superblock::feat_incompat;
+use crate::inode::Inode;
 use crate::util::*;
 use alloc::vec::Vec;
 
@@ -105,7 +104,7 @@ pub struct EaItem {
 /// Checksum d'un bloc EA (metadata_csum) — e2fsprogs ext2fs_ext_attr_block_csum :
 /// seed sb, le64(nr de bloc), bloc entier avec h_checksum à zéro.
 pub fn block_csum(seed: u32, block_nr: u64, raw: &[u8]) -> u32 {
-    let mut c = crc32c_update(seed, &block_nr.to_le_bytes());
+    let c = crc32c_update(seed, &block_nr.to_le_bytes());
     let mut tmp = Vec::with_capacity(raw.len());
     tmp.extend_from_slice(raw);
     if tmp.len() >= 20 {
