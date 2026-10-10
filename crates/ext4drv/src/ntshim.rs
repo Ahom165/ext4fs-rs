@@ -209,8 +209,9 @@ unsafe extern "system" {
         ReturnLength: *mut u32,
     ) -> i32;
 
-    pub fn MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: u32) -> *mut c_void;
-
+    // MmGetSystemAddressForMdlSafe : MACRO wdm.h, pas un export —
+    // réimplémentée en Rust (mm_get_system_address_for_mdl_safe plus bas)
+    // autour de MmMapLockedPagesSpecifyCache (export réel).
     pub fn MmMapLockedPagesSpecifyCache(
         MemoryDescriptorList: PMDL,
         AccessMode: i8,
@@ -294,7 +295,10 @@ unsafe extern "system" {
     ) -> PIRP;
     pub fn KeInitializeEvent(Event: *mut c_void, Type: i32, State: u8);
     pub fn KeSetEvent(Event: *mut c_void, Increment: i32, Wait: u8) -> i32;
-    pub fn KeQuerySystemTime(CurrentTime: *mut i64);
+    // KeQuerySystemTime n'est PAS exporté par ntoskrnl.lib x64 (FORCEINLINE wdm.h) :
+    // on passe par KeQuerySystemTimePrecise (export réel, même sémantique, précision
+    // supérieure) — voir ke_query_system_time plus bas.
+    pub fn KeQuerySystemTimePrecise(CurrentTime: *mut i64);
     pub fn KeWaitForSingleObject(
         Object: *mut c_void,
         WaitReason: i32,
@@ -328,6 +332,41 @@ pub unsafe fn skip_current_stack_location(irp: PIRP) {
     (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation =
         ((*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation as *mut u8)
             .add(core::mem::size_of::<wdk_sys::IO_STACK_LOCATION>()) as *mut _;
+}
+
+/// KeQuerySystemTime (FORCEINLINE wdm.h, non exportée) : équivalent via
+/// KeQuerySystemTimePrecise, export réel de ntoskrnl (même sémantique, temps
+/// système UTC en unités de 100 ns depuis 1601, précision supérieure).
+#[inline]
+pub unsafe fn KeQuerySystemTime(CurrentTime: *mut i64) {
+    KeQuerySystemTimePrecise(CurrentTime);
+}
+
+/// Flags MDL utilisés par la macro MmGetSystemAddressForMdlSafe (wdm.h).
+pub const MDL_MAPPED_TO_SYSTEM_VA: u16 = 0x0001;
+pub const MDL_SOURCE_IS_NONPAGED_POOL: u16 = 0x0010;
+
+/// MmGetSystemAddressForMdlSafe (macro wdm.h, pas un export ntoskrnl) :
+/// expansion Rust — MDL déjà mappé ? renvoie MappedSystemVa, sinon mappe
+/// les pages en mode kernel, cachées (MmCached), sans bugcheck (le
+/// mapping échoué renvoie NULL que l'appelant traite).
+#[inline]
+pub unsafe fn MmGetSystemAddressForMdlSafe(mdl: PMDL, priority: u32) -> *mut c_void {
+    // PMDL reste opaque dans les signatures du shim ; le cast interne donne
+    // accès aux champs du MDL réel (bindgen : struct _MDL, alias MDL).
+    let m = mdl as *mut wdk_sys::MDL;
+    if ((*m).MdlFlags as u16) & (MDL_MAPPED_TO_SYSTEM_VA | MDL_SOURCE_IS_NONPAGED_POOL) != 0 {
+        (*m).MappedSystemVa
+    } else {
+        MmMapLockedPagesSpecifyCache(
+            mdl,
+            0, // KernelMode
+            1, // MmCached
+            core::ptr::null_mut(),
+            0, // BugCheckOnFailure = FALSE
+            priority,
+        )
+    }
 }
 
 /// ExInitializeFastMutex n'est pas exposé par wdk-sys (FORCEINLINE non générée

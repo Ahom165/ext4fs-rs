@@ -64,7 +64,7 @@ unsafe extern "system" fn cc_release_readahead(_ctx: *mut c_void) {}
 pub unsafe fn irp_buffer(irp: PIRP, len: usize) -> Result<*mut c_void, i32> {
     let mdl: *mut c_void = core::ptr::read(addr_of!((*irp).MdlAddress) as *const *mut c_void);
     if !mdl.is_null() {
-        let addr = MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
+        let addr = MmGetSystemAddressForMdlSafe(mdl as PMDL, NormalPagePriority);
         if addr.is_null() {
             return Err(nd::st::UNSUCCESSFUL);
         }
