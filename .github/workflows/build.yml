@@ -43,15 +43,14 @@ jobs:
           }
           Write-Host "libclang present: $(Test-Path 'C:\Program Files\LLVM\bin\libclang.dll')"
 
-      - name: Installation WDK 10.0.26100
+      - name: Installation WDK 10.0.26100 (wdksetup.exe)
         shell: pwsh
         run: |
-          winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "== winget a echoue (code $LASTEXITCODE), WDK disponibles =="
-            winget search WindowsWDK
-            exit 1
-          }
+          $wdk = "$env:RUNNER_TEMP\wdksetup.exe"
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2313259' -OutFile $wdk
+          Write-Host "Taille wdksetup.exe : $((Get-Item $wdk).Length) octets"
+          Start-Process -FilePath $wdk -ArgumentList '/features','Option.Options.WindowsDriverKit.x64','/q' -Wait
+          if ($LASTEXITCODE -ne 0) { Write-Host "wdksetup exit = $LASTEXITCODE"; exit 1 }
           Write-Host "WDK installe : $(Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include')"
 
       - name: Build ext4-core + ext4cli (workspace)
