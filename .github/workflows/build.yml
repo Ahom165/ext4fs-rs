@@ -1,11 +1,13 @@
 # build.yml - compilation CI du pilote + outils (aucun WDK a installer chez toi)
 #
-# Le runner windows-2022 a deja VS2022 (MSVC + link.exe). Il ne manque que :
-#   - le WDK (installe via winget, ~3 min)
-#   - LLVM/libclang pour bindgen (wdk-sys genere ses bindings a la compilation)
+# Runner windows-2022 : VS2022 (MSVC + link.exe) et LLVM deja presents.
+# Le WDK est installe via NuGet selon la recette officielle de
+# microsoft/windows-drivers-rs (.github/actions/install-wdk, source: nuget) :
+#   - Microsoft.Windows.WDK.x64 (+ dependance Microsoft.Windows.SDK.CPP)
+#   - env lues par wdk-build : WDKContentRoot / Version_Number / WDKBinRoot...
 #
-# Artefact produit : ext4fs-rs-dist (dist/ext4drv.sys + ext4ctl.exe + ext4cli.exe)
-# Utilisation locale ensuite : sign.ps1 puis install.ps1 (PowerShell pur, sans WDK).
+# Artefact : ext4fs-rs-dist (dist/ext4drv.sys + ext4ctl.exe + ext4cli.exe)
+# Utilisation locale ensuite : sign.ps1 puis install.ps1 (PowerShell pur).
 
 name: build-driver
 
@@ -43,15 +45,46 @@ jobs:
           }
           Write-Host "libclang present: $(Test-Path 'C:\Program Files\LLVM\bin\libclang.dll')"
 
-      - name: Installation WDK 10.0.26100 (wdksetup.exe)
+      - name: Installation WDK 10.0.26100 via NuGet (recette windows-drivers-rs)
         shell: pwsh
         run: |
-          $wdk = "$env:RUNNER_TEMP\wdksetup.exe"
-          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2313259' -OutFile $wdk
-          Write-Host "Taille wdksetup.exe : $((Get-Item $wdk).Length) octets"
-          Start-Process -FilePath $wdk -ArgumentList '/features','Option.Options.WindowsDriverKit.x64','/q' -Wait
-          if ($LASTEXITCODE -ne 0) { Write-Host "wdksetup exit = $LASTEXITCODE"; exit 1 }
-          Write-Host "WDK installe : $(Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include')"
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          # nuget.exe : preinstalle sur l'image runner, sinon telechargement direct
+          if (Get-Command nuget -ErrorAction SilentlyContinue) {
+            $nuget = 'nuget'
+          } else {
+            $nuget = "$env:RUNNER_TEMP\nuget.exe"
+            Invoke-WebRequest -Uri 'https://dist.nuget.org/win-x86-commandline/latest/nuget.exe' -OutFile $nuget
+          }
+
+          # Derniere QFE du WDK 26100 publiee sur NuGet
+          $idx = Invoke-RestMethod -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.windows.wdk.x64/index.json' -TimeoutSec 60
+          $version = @($idx.versions | Where-Object { $_ -match '^10\.0\.26100\.\d+$' } | Sort-Object { [version]$_ })[-1]
+          if (-not $version) { throw 'aucune version WDK 10.0.26100.x trouvee sur NuGet' }
+          Write-Host "Version WDK resolue : $version"
+
+          $root = 'C:\packages'
+          & $nuget install Microsoft.Windows.WDK.x64 -Version $version -OutputDirectory $root -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install WDK.x64 a echoue ($LASTEXITCODE)" }
+
+          $sdkVersion = '10.0.26100'
+          $dirs = Get-ChildItem $root -Directory
+          Write-Host "Packages installes : $(($dirs | ForEach-Object Name) -join ', ')"
+          $sdkPkg = ($dirs | Where-Object { $_.Name -match "^Microsoft\.Windows\.SDK\.CPP\.$sdkVersion(\.\d+)?$" })[0]
+          $wdkPkg = ($dirs | Where-Object { $_.Name -match "^Microsoft\.Windows\.WDK\.x64\.$sdkVersion(\.\d+)?$" })[0]
+          if (-not $sdkPkg) { throw 'package Microsoft.Windows.SDK.CPP introuvable' }
+          if (-not $wdkPkg) { throw 'package Microsoft.Windows.WDK.x64 introuvable' }
+          if (-not (Test-Path "$($wdkPkg.FullName)\c")) { throw 'WDKContentRoot inexistant' }
+
+          # Variables lues par wdk-build (detect_wdk_content_root + toolchain)
+          "Version_Number=$sdkVersion.0" >> $env:GITHUB_ENV
+          "WindowsSdkBinPath=$($sdkPkg.FullName)\c\bin" >> $env:GITHUB_ENV
+          "WDKContentRoot=$($wdkPkg.FullName)\c\" >> $env:GITHUB_ENV
+          "WDKBinRoot=$($wdkPkg.FullName)\c\bin\$sdkVersion.0" >> $env:GITHUB_ENV
+          "WDKToolRoot=$($wdkPkg.FullName)\c\tools\$sdkVersion.0" >> $env:GITHUB_ENV
+          Write-Host "WDKContentRoot = $($wdkPkg.FullName)\c\"
 
       - name: Build ext4-core + ext4cli (workspace)
         shell: pwsh
@@ -67,10 +100,9 @@ jobs:
         shell: pwsh
         env:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
-          WDKContentRoot: 'C:\Program Files (x86)\Windows Kits\10'
         working-directory: crates/ext4drv
         run: |
-          cargo build --profile driver-release 2>&1 | Tee-Object -FilePath ..\..\driver-build.log
+          cargo build --profile driver-release
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build ext4ctl (user-mode)
@@ -94,11 +126,3 @@ jobs:
         with:
           name: ext4fs-rs-dist
           path: dist/
-
-      - name: Upload log pilote si echec
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: driver-build-log
-          path: driver-build.log
-          if-no-files-found: ignore
