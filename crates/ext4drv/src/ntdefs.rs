@@ -25,6 +25,9 @@ pub const fn ctl_code(dev: u32, func: u32, method: u32, access: u32) -> u32 {
 }
 
 pub const METHOD_BUFFERED: u32 = 0;
+pub const METHOD_IN_DIRECT: u32 = 1;
+pub const METHOD_OUT_DIRECT: u32 = 2;
+pub const METHOD_NEITHER: u32 = 3;
 pub const FILE_ANY_ACCESS: u32 = 0;
 pub const FILE_READ_ACCESS: u32 = 0x1;
 pub const FILE_WRITE_ACCESS: u32 = 0x2;
@@ -87,10 +90,17 @@ pub const SL_CASE_SENSITIVE: u8 = 0x80;
 // Flags FILE_OBJECT (plats, FieldOffset connus)
 pub const FO_FILE_OPEN_CANCELLED: u32 = 0x0080_0000;
 
-// VPB flags
-pub const VPB_MOUNTED: u32 = 0x0000_0001;
+// VPB flags (VPB_MOUNTED en u16 : appliqué à (*vpb).Flags qui est u16 en x64)
+pub const VPB_MOUNTED: u16 = 0x0000_0001;
 pub const VPB_LOCKED: u32 = 0x0000_0002;
 pub const VPB_PERSISTENT: u32 = 0x0000_0004;
+
+// Ré-export : les sites d'appel écrivent nd::FILE_ACTION_* / nd::FILE_NOTIFY_CHANGE_*
+// (les constantes vivent dans ntshim, uniques dans le crate)
+pub use crate::ntshim::{
+    FILE_ACTION_ADDED, FILE_ACTION_MODIFIED, FILE_ACTION_REMOVED, FILE_NOTIFY_CHANGE_EA,
+    FILE_NOTIFY_CHANGE_NAME, FILE_NOTIFY_CHANGE_SECURITY,
+};
 
 // ---------------------------------------------------------------------------
 // Create (IrpSp->Parameters.Create.Options / desired access / share)
@@ -525,19 +535,21 @@ pub fn build_symlink_reparse(out: &mut [u8], substitute: &[u16], print: &[u16], 
     if total > MAXIMUM_REPARSE_DATA_BUFFER_SIZE {
         return None;
     }
-    let w = |off: usize, v: u32| {
+    // closures paramétrées par le buffer (pas de capture : deux closures
+    // ne peuvent pas emprunter `out` de façon unique simultanément)
+    let w = |out: &mut [u8], off: usize, v: u32| {
         out[off..off + 4].copy_from_slice(&v.to_le_bytes());
     };
-    let w16 = |off: usize, v: u16| {
+    let w16 = |out: &mut [u8], off: usize, v: u16| {
         out[off..off + 2].copy_from_slice(&v.to_le_bytes());
     };
-    w(0, IO_REPARSE_TAG_SYMLINK);
-    w16(4, (total - 8) as u16); // ReparseDataLength (sans l'en-tête 8)
-    w16(8, 0); // sub offset (octets depuis PathBuffer)
-    w16(10, sub_bytes as u16);
-    w16(12, sub_bytes as u16); // print offset
-    w16(14, print_bytes as u16);
-    w(16, if relative { SYMLINK_FLAG_RELATIVE } else { 0 });
+    w(out, 0, IO_REPARSE_TAG_SYMLINK);
+    w16(out, 4, (total - 8) as u16); // ReparseDataLength (sans l'en-tête 8)
+    w16(out, 8, 0); // sub offset (octets depuis PathBuffer)
+    w16(out, 10, sub_bytes as u16);
+    w16(out, 12, sub_bytes as u16); // print offset
+    w16(out, 14, print_bytes as u16);
+    w(out, 16, if relative { SYMLINK_FLAG_RELATIVE } else { 0 });
     for (i, wc) in substitute.iter().enumerate() {
         let o = path_off + i * 2;
         out[o..o + 2].copy_from_slice(&wc.to_le_bytes());
@@ -624,4 +636,6 @@ pub mod st {
     pub const BUFFER_OVERFLOW: i32 = 0x8000_0005u32 as i32;
     pub const OPLOCK_NOT_GRANTED: i32 = 0xC000_0088u32 as i32;
     pub const OPLOCK_BREAK_IN_PROGRESS: i32 = 0x0000_0108u32 as i32;
+    // STATUS_NOT_SUPPORTED : valeur générique certaine, à affiner contre ntstatus.h
+    pub const DATA_ENCRYPTION_UNSUPPORTED: i32 = 0xC000_00BBu32 as i32;
 }

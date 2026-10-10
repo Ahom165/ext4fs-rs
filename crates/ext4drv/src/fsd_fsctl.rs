@@ -2,18 +2,22 @@
 //! sur volume (FSCTL reparse + dismount), IRP_MJ_DEVICE_CONTROL volume.
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
-use core::ptr::{addr_of, null_mut};
+use core::ptr::{addr_of, addr_of_mut, null_mut};
 
+use crate::fsd::complete_irp;
 use crate::fsd_io;
+use crate::fsd_info::{complete_err, complete_err_raw};
 use crate::fsd_types::*;
 use crate::ntdefs as nd;
 use crate::ntshim::*;
 use crate::uni;
 use wdk_sys::{
-    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex, KeQuerySystemTime},
+    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex},
     IO_STATUS_BLOCK, LARGE_INTEGER, PIRP,
 };
 
@@ -22,7 +26,7 @@ use wdk_sys::{
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_cleanup(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -138,7 +142,7 @@ pub unsafe fn dispatch_cleanup(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_close(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -156,7 +160,7 @@ pub unsafe fn dispatch_close(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_flush(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -195,7 +199,7 @@ pub unsafe fn dispatch_flush(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_lock(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let fcb = fs_context(fo) as *mut Fcb;
     if fcb.is_null() || (*fcb).lock.is_null() {
@@ -211,7 +215,7 @@ pub unsafe fn dispatch_lock(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_fsctrl_volume(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let minor: u8 = core::ptr::read(core::ptr::addr_of!((*sp).MinorFunction));
     match minor {
         nd::MN_USER_FS_REQUEST => {
@@ -300,7 +304,7 @@ pub unsafe fn dispatch_fsctrl_volume(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 unsafe fn get_reparse(vcb: *mut Vcb, irp: PIRP, fcb: *mut Fcb) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (out_len0, _ib, _c, _il) = p_userfs(sp);
     let out_len = out_len0 as usize;
     if (*fcb).ftype != FCB_TYPE_SYMLINK {
@@ -363,7 +367,7 @@ fn printable_name(sub: &[u16]) -> Vec<u16> {
 }
 
 unsafe fn set_reparse(vcb: *mut Vcb, irp: PIRP, ccb: *mut Ccb, fcb: *mut Fcb) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (_o, _ib, _c, in_len0) = p_userfs(sp);
     let in_len = in_len0 as usize;
     let input = match crate::fsd_io::irp_buffer_pub(irp, in_len) {
@@ -440,7 +444,7 @@ unsafe fn delete_reparse(vcb: *mut Vcb, irp: PIRP, ccb: *mut Ccb, fcb: *mut Fcb)
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_volume_devctrl(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (out_len0, _ib, code) = p_devctrl(sp);
     // IOCTL_MOUNTDEV_QUERY_DEVICE_NAME : répond depuis notre nom NT
     if code == 0x004D_0008 {
@@ -510,7 +514,7 @@ fn components_utf16(comps: &[Vec<u16>]) -> Vec<u16> {
 fn touch_now(fcb: *mut Fcb) {
     unsafe {
         let mut t = LARGE_INTEGER::default();
-        KeQuerySystemTime(&mut t);
+        KeQuerySystemTime(&mut t as *mut LARGE_INTEGER as *mut i64);
         let now = core::ptr::read(core::ptr::addr_of!(t.QuadPart));
         (*fcb).write = now;
         (*fcb).change = now;

@@ -294,6 +294,7 @@ unsafe extern "system" {
     ) -> PIRP;
     pub fn KeInitializeEvent(Event: *mut c_void, Type: i32, State: u8);
     pub fn KeSetEvent(Event: *mut c_void, Increment: i32, Wait: u8) -> i32;
+    pub fn KeQuerySystemTime(CurrentTime: *mut i64);
     pub fn KeWaitForSingleObject(
         Object: *mut c_void,
         WaitReason: i32,
@@ -324,9 +325,24 @@ unsafe extern "system" {
 #[inline]
 pub unsafe fn skip_current_stack_location(irp: PIRP) {
     (*irp).CurrentLocation += 1;
-    (*irp).Tail.Overlay.CurrentStackLocation =
-        ((*irp).Tail.Overlay.CurrentStackLocation as *mut u8)
+    (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation =
+        ((*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation as *mut u8)
             .add(core::mem::size_of::<wdk_sys::IO_STACK_LOCATION>()) as *mut _;
+}
+
+/// ExInitializeFastMutex n'est pas exposé par wdk-sys (FORCEINLINE non générée
+/// par bindgen) : séquence d'initialisation wdm.h réimplémentée ici.
+#[inline]
+pub unsafe fn init_fast_mutex(m: *mut FAST_MUTEX) {
+    (*m).Count = 1;
+    (*m).Owner = core::ptr::null_mut();
+    (*m).Contention = 0;
+    KeInitializeEvent(
+        core::ptr::addr_of_mut!((*m).Event) as *mut c_void,
+        1, // SynchronizationEvent
+        0,
+    );
+    (*m).OldIrql = 0;
 }
 
 pub const MmFlushImageWriteToDisk: u32 = 0; // MmFlushImageWriteToDisk

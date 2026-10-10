@@ -2,6 +2,7 @@
 //! suivi des liens symboliques (STATUS_REPARSE), partage, volume DASD.
 
 use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -9,6 +10,7 @@ use core::ptr::{addr_of, null_mut};
 
 use ext4_core::inode::FileType;
 
+use crate::fsd::{complete_irp, get_fcb, refresh_fcb};
 use crate::fsd_io;
 use crate::fsd_types::*;
 use crate::ntdefs as nd;
@@ -20,7 +22,7 @@ use wdk_sys::{
 };
 
 pub unsafe fn dispatch_create(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let options = p_create_options(sp);
     let _attrs = p_create_attrs(sp);

@@ -22,12 +22,14 @@ use core::ptr::{addr_of, addr_of_mut, null_mut};
 
 use ext4_core::xattr::{self, XIDX_USER};
 
+use crate::fsd::complete_irp;
+use crate::fsd_info::{complete_err, complete_err_raw};
 use crate::fsd_types::*;
 use crate::ntdefs as nd;
 use crate::ntshim::*;
 use crate::uni;
 use wdk_sys::{
-    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex, KeQuerySystemTime},
+    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex},
     FAST_MUTEX, LARGE_INTEGER, PIRP,
 };
 
@@ -88,7 +90,7 @@ pub fn default_security_descriptor() -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_query_ea(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -201,7 +203,7 @@ pub unsafe fn dispatch_set_ea(vcb: *mut Vcb, irp: PIRP) -> i32 {
     if (*vcb).read_only {
         return complete_err_raw(irp, nd::st::MEDIA_WRITE_PROTECTED);
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -267,7 +269,7 @@ pub unsafe fn dispatch_set_ea(vcb: *mut Vcb, irp: PIRP) -> i32 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_query_security(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -299,7 +301,7 @@ pub unsafe fn dispatch_set_security(vcb: *mut Vcb, irp: PIRP) -> i32 {
     if (*vcb).read_only {
         return complete_err_raw(irp, nd::st::MEDIA_WRITE_PROTECTED);
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -533,6 +535,7 @@ pub unsafe fn open_stream(
         ExReleaseFastMutex(&mut (*vcb).mutex);
         return complete_err(irp, &e);
     }
+    let cur = cur.unwrap_or_default(); // Option<Vec<u8>> (Err déjà traité ci-dessus)
     let exists = cur.is_some();
     let mut value = cur.unwrap_or_default();
     match disp {
@@ -617,7 +620,7 @@ pub unsafe fn open_stream(
                 stream: Some(stream_name.to_vec()),
                 open_count: 0,
             });
-            ExInitializeFastMutex(&mut f.lazy_mutex);
+            init_fast_mutex(&mut f.lazy_mutex);
             init_list_head(&mut f.notify_list as *mut [u64; 2]);
             let p = core::ptr::from_mut(f.as_mut());
             (*vcb).streams.insert(key, f);
@@ -659,7 +662,7 @@ fn missing(value: &Option<Vec<u8>>) -> bool {
 
 /// Lecture d'un flux : tranche de la valeur xattr (zéros au-delà).
 pub unsafe fn stream_read(vcb: *mut Vcb, irp: PIRP, fcb: *mut Fcb) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (len, offset) = p_read(sp);
     let fsize = (*fcb).size;
     if offset < 0 || (offset as u64) >= fsize || len == 0 {
@@ -707,7 +710,7 @@ pub unsafe fn stream_write(vcb: *mut Vcb, irp: PIRP, fcb: *mut Fcb) -> i32 {
     if (*vcb).read_only {
         return complete_err_raw(irp, nd::st::MEDIA_WRITE_PROTECTED);
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (len, offset) = p_read(sp);
     if len == 0 {
         complete_irp(irp, 0, 0);
@@ -731,7 +734,8 @@ pub unsafe fn stream_write(vcb: *mut Vcb, irp: PIRP, fcb: *mut Fcb) -> i32 {
         ExReleaseFastMutex(&mut (*vcb).mutex);
         return complete_err(irp, &e);
     }
-    let mut value = cur.unwrap_or_default();
+    // Err déjà traité ci-dessus : Option<Vec<u8>> → Vec<u8>
+    let mut value = cur.unwrap_or_default().unwrap_or_default();
     let end = offset as usize + len as usize;
     if value.len() < end {
         value.resize(end, 0);
@@ -950,7 +954,7 @@ pub unsafe fn ea_total_size(vcb: *mut Vcb, ino: u32) -> u32 {
 /// posé par le moteur).
 unsafe fn touch_change(fcb: *mut Fcb) {
     let mut t = LARGE_INTEGER::default();
-    KeQuerySystemTime(&mut t);
+    KeQuerySystemTime(&mut t as *mut LARGE_INTEGER as *mut i64);
     let now = core::ptr::read(core::ptr::addr_of!(t.QuadPart));
     (*fcb).write = now;
     (*fcb).change = now;

@@ -2,6 +2,7 @@
 //! lecteur via le mount manager), cycle de vie VCB/FCB.
 
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr::{addr_of, addr_of_mut, null_mut};
@@ -14,7 +15,7 @@ use crate::ntshim::*;
 use crate::uni;
 use crate::zpdev::{DevBlockDevice, KernelTime};
 use wdk_sys::{
-    ntddk::{ExAcquireFastMutex, ExInitializeFastMutex, ExReleaseFastMutex, IoCreateDevice},
+    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex, IoCreateDevice},
     DEVICE_OBJECT, FAST_MUTEX, IO_STATUS_BLOCK, LARGE_INTEGER, OBJECT_ATTRIBUTES,
     PDRIVER_OBJECT, PIRP, UNICODE_STRING,
 };
@@ -33,7 +34,7 @@ impl FsDevExt {
     pub fn new() -> FsDevExt {
         let mut mutex = FAST_MUTEX::default();
         unsafe {
-            ExInitializeFastMutex(&mut mutex);
+            init_fast_mutex(&mut mutex);
         }
         FsDevExt {
             magic: FSDE_MAGIC,
@@ -84,12 +85,12 @@ pub fn unregister_filesystem() {
 // ---------------------------------------------------------------------------
 
 /// Route un IRP selon le device : FS device, device volume, device contrôle.
-pub unsafe extern "system" fn fsd_dispatch(device: *mut DEVICE_OBJECT, irp: PIRP) -> i32 {
+pub unsafe extern "C" fn fsd_dispatch(device: *mut DEVICE_OBJECT, irp: PIRP) -> i32 {
     if device.is_null() {
         complete_irp(irp, nd::st::INVALID_DEVICE_REQUEST, 0);
         return nd::st::INVALID_DEVICE_REQUEST;
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let major: u8 = sp_major(sp);
 
     // device de contrôle (phase 1 : images) ?
@@ -152,7 +153,7 @@ pub unsafe extern "system" fn fsd_dispatch(device: *mut DEVICE_OBJECT, irp: PIRP
 }
 
 unsafe extern "system" fn dispatch_pnp(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let minor: u8 = sp_minor(sp);
     if minor == nd::MN_SURPRISE_REMOVAL {
         let _ = dismount(vcb, true);
@@ -164,8 +165,8 @@ unsafe extern "system" fn dispatch_pnp(vcb: *mut Vcb, irp: PIRP) -> i32 {
 /// Complète un IRP.
 pub fn complete_irp(irp: PIRP, status: i32, info: usize) {
     unsafe {
-        (*irp).IoStatus.Status = status;
-        (*irp).IoStatus.Information = info;
+        (*irp).IoStatus.__bindgen_anon_1.Status = status;
+        (*irp).IoStatus.Information = info as u64;
         wdk_sys::ntddk::IofCompleteRequest(irp, 0);
     }
 }
@@ -175,7 +176,7 @@ pub fn complete_irp(irp: PIRP, status: i32, info: usize) {
 // ---------------------------------------------------------------------------
 
 unsafe extern "system" fn fsctrl_fs_device(_device: *mut DEVICE_OBJECT, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let minor: u8 = sp_minor(sp);
     match minor {
         nd::MN_MOUNT_VOLUME => mount_volume(irp),
@@ -205,7 +206,7 @@ unsafe extern "system" fn fsctrl_fs_device(_device: *mut DEVICE_OBJECT, irp: PIR
 /// IRP_MN_MOUNT_VOLUME : ouvre le volume réel, lit le superblock ext4, crée
 /// le device volume, renseigne la VPB puis notifie le mount manager.
 unsafe extern "system" fn mount_volume(irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (vpb, real_dev) = p_mount(sp);
     if vpb.is_null() || real_dev.is_null() {
         complete_irp(irp, nd::st::INVALID_PARAMETER, 0);
@@ -247,7 +248,7 @@ unsafe extern "system" fn mount_volume(irp: PIRP) -> i32 {
     let mut vol_dev: *mut DEVICE_OBJECT = null_mut();
     let status = IoCreateDevice(
         driver as PDRIVER_OBJECT,
-        core::mem::size_of::<Vcb>(),
+        core::mem::size_of::<Vcb>() as u32,
         core::ptr::null_mut(), // sans nom
         nd::FILE_DEVICE_DISK_FILE_SYSTEM,
         0,
@@ -264,7 +265,7 @@ unsafe extern "system" fn mount_volume(irp: PIRP) -> i32 {
 
     // VCB
     let mut mutex = FAST_MUTEX::default();
-    ExInitializeFastMutex(&mut mutex);
+    init_fast_mutex(&mut mutex);
     let label_raw = fs.sb.volume_name();
     let mut label = uni::utf8_to_utf16(label_raw.as_bytes());
     if label.is_empty() {
@@ -513,7 +514,7 @@ pub unsafe fn dismount(vcb: *mut Vcb, force: bool) -> Result<(), i32> {
     }
 
     // purge des FCB de flux + oplocks (le VCB est en voie de disparition)
-    let stream_keys: Vec<(u32, Vec<u8>)> = (*vcb).streams.keys().copied().collect();
+    let stream_keys: Vec<(u32, Vec<u8>)> = (*vcb).streams.keys().cloned().collect();
     for k in stream_keys {
         if let Some(mut f) = (*vcb).streams.remove(&k) {
             crate::fsd_xattr::uninitialize_oplock(core::ptr::from_mut(f.as_mut()));
@@ -613,7 +614,7 @@ pub unsafe fn alloc_fcb(vcb: *mut Vcb, ino: u32, ftype: u8) -> Result<*mut Fcb, 
         stream: None,
         open_count: 0,
     });
-    ExInitializeFastMutex(&mut fcb.lazy_mutex);
+    init_fast_mutex(&mut fcb.lazy_mutex);
     refresh_fcb(vcb, &mut fcb)?;
     init_list_head(&mut fcb.notify_list as *mut [u64; 2]);
     let ptr = core::ptr::from_mut(fcb.as_mut());

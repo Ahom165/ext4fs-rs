@@ -4,9 +4,11 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::cell::UnsafeCell;
 use ext4_core::fs::Filesystem;
-use wdk_sys::ntddk::{ExAcquireFastMutex, ExInitializeFastMutex, ExReleaseFastMutex};
+use ext4_core::BlockDevice;
+use wdk_sys::ntddk::{ExAcquireFastMutex, ExReleaseFastMutex};
 use wdk_sys::FAST_MUTEX;
 
+use crate::ntshim::init_fast_mutex;
 use crate::zpdev::{KernelTime, ZwBlockDevice};
 
 /// Un volume ext4 monté côté kernel. Le Filesystem possède l'appareil bloc
@@ -19,7 +21,9 @@ pub struct Volume {
 
 /// Registre global : BTreeMap<id, Volume> sous FAST_MUTEX.
 pub struct VolumeRegistry {
-    mutex: FAST_MUTEX,
+    // UnsafeCell : les méthodes prennent &self mais le mutex noyau mute par
+    // pointeur brut (ExAcquireFastMutex) — cohérent avec `inner`.
+    mutex: UnsafeCell<FAST_MUTEX>,
     inner: UnsafeCell<RegistryInner>,
     next_id: u32,
 }
@@ -33,9 +37,9 @@ unsafe impl Sync for VolumeRegistry {}
 
 impl VolumeRegistry {
     pub fn new() -> VolumeRegistry {
-        let mut mutex = FAST_MUTEX::default();
+        let mutex = UnsafeCell::new(FAST_MUTEX::default());
         unsafe {
-            ExInitializeFastMutex(&mut mutex);
+            init_fast_mutex(mutex.get());
         }
         VolumeRegistry {
             mutex,
@@ -49,28 +53,28 @@ impl VolumeRegistry {
 
     pub fn open_count_inc(&self) {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             (*self.inner.get()).open_count += 1;
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
         }
     }
 
     pub fn open_count_dec(&self) -> usize {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let inner = &mut *self.inner.get();
             inner.open_count -= 1;
             let n = inner.open_count;
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
             n
         }
     }
 
     pub fn open_count(&self) -> usize {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let n = (*self.inner.get()).open_count;
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
             n
         }
     }
@@ -90,29 +94,30 @@ impl VolumeRegistry {
                 return Err(0xC000_00BBu32 as i32); // STATUS_NOT_SUPPORTED
             }
         };
-        unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+        let id = unsafe {
+            ExAcquireFastMutex(self.mutex.get());
             let inner = &mut *self.inner.get();
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);
             inner.volumes.insert(id, Volume { id, read_only: ro, fs });
-            ExReleaseFastMutex(&mut self.mutex);
-        }
+            ExReleaseFastMutex(self.mutex.get());
+            id
+        };
         Ok(id)
     }
 
     pub fn unmount(&self, id: u32) -> Result<(), i32> {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let inner = &mut *self.inner.get();
             match inner.volumes.remove(&id) {
                 Some(mut v) => {
                     let _ = v.fs.unmount();
-                    ExReleaseFastMutex(&mut self.mutex);
+                    ExReleaseFastMutex(self.mutex.get());
                     Ok(())
                 }
                 None => {
-                    ExReleaseFastMutex(&mut self.mutex);
+                    ExReleaseFastMutex(self.mutex.get());
                     Err(0xC000_0004u32 as i32) // STATUS_INVALID_HANDLE
                 }
             }
@@ -126,31 +131,31 @@ impl VolumeRegistry {
         f: impl FnOnce(&mut Volume) -> Result<R, i32>,
     ) -> Result<R, i32> {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let inner = &mut *self.inner.get();
             let result = match inner.volumes.get_mut(&id) {
                 Some(v) => f(v),
                 None => Err(0xC000_0004u32 as i32), // STATUS_INVALID_HANDLE
             };
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
             result
         }
     }
 
     pub fn first_volume_id(&self) -> Option<u32> {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let id = (*self.inner.get()).volumes.keys().next().copied();
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
             id
         }
     }
 
     pub fn has_volumes(&self) -> bool {
         unsafe {
-            ExAcquireFastMutex(&mut self.mutex);
+            ExAcquireFastMutex(self.mutex.get());
             let n = !(*self.inner.get()).volumes.is_empty();
-            ExReleaseFastMutex(&mut self.mutex);
+            ExReleaseFastMutex(self.mutex.get());
             n
         }
     }

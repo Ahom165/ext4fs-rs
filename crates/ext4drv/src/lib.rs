@@ -49,6 +49,9 @@ use wdk_alloc::WdkAllocator;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: WdkAllocator = WdkAllocator;
 
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 use ioctl_defs as proto;
 
@@ -96,7 +99,7 @@ pub unsafe extern "system" fn driver_entry(
     let mut control: *mut DEVICE_OBJECT = core::ptr::null_mut();
     let status = IoCreateDevice(
         driver as PDRIVER_OBJECT,
-        core::mem::size_of::<DeviceExtension>(),
+        core::mem::size_of::<DeviceExtension>() as u32,
         &mut nt_name,
         proto::FILE_DEVICE_UNKNOWN,
         0,
@@ -124,7 +127,7 @@ pub unsafe extern "system" fn driver_entry(
     let mut fsdev: *mut DEVICE_OBJECT = core::ptr::null_mut();
     let status = IoCreateDevice(
         driver as PDRIVER_OBJECT,
-        core::mem::size_of::<fsd::FsDevExt>(),
+        core::mem::size_of::<fsd::FsDevExt>() as u32,
         core::ptr::null_mut(), // sans nom
         nd::FILE_DEVICE_DISK_FILE_SYSTEM,
         0,
@@ -163,7 +166,7 @@ pub unsafe extern "system" fn driver_entry(
     0
 }
 
-unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+unsafe extern "C" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     // v2 : arrête le worker de commit avant le démontage (pas de course)
     fsd_xattr::stop_commit_worker();
 
@@ -212,7 +215,7 @@ pub unsafe extern "system" fn dispatch_control(
     device: *mut DEVICE_OBJECT,
     irp: PIRP,
 ) -> i32 {
-    let stack: *mut wdk_sys::IO_STACK_LOCATION = (*irp).Tail.Overlay.CurrentStackLocation;
+    let stack: *mut wdk_sys::IO_STACK_LOCATION = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let code = (*stack).Parameters.DeviceIoControl.IoControlCode;
     let in_len = (*stack).Parameters.DeviceIoControl.InputBufferLength as usize;
     let out_len = (*stack).Parameters.DeviceIoControl.OutputBufferLength as usize;
@@ -272,8 +275,8 @@ pub unsafe extern "system" fn dispatch_control(
 
 fn complete(irp: PIRP, status: i32, info: usize) {
     unsafe {
-        (*irp).IoStatus.Status = status;
-        (*irp).IoStatus.Information = info;
+        (*irp).IoStatus.__bindgen_anon_1.Status = status;
+        (*irp).IoStatus.Information = info as u64;
         wdk_sys::ntddk::IofCompleteRequest(irp, 0);
     }
 }

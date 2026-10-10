@@ -126,3 +126,25 @@ jobs:
         with:
           name: ext4fs-rs-dist
           path: dist/
+
+      - name: Archive bindings wdk-sys (verite terrain bindgen)
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bindings-out | Out-Null
+          $b = Get-ChildItem -Path crates\ext4drv\target -Recurse -Filter "ntddk.rs" -ErrorAction SilentlyContinue |
+               Where-Object { $_.FullName -like "*wdk-sys*out*" } | Select-Object -First 3
+          $i = 0
+          foreach ($f in $b) {
+            Copy-Item $f.FullName ("bindings-out\ntddk-bindings-$i.rs")
+            Write-Host "bindings: $($f.FullName) ($((Get-Item $f.FullName).Length) octets)"
+            $i++
+          }
+
+      - name: Upload bindings wdk-sys
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wdk-sys-bindings
+          path: bindings-out/
+          if-no-files-found: ignore

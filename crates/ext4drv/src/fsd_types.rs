@@ -196,15 +196,15 @@ pub unsafe fn sp_major(sp: IrpSp) -> u8 {
 }
 #[inline]
 pub unsafe fn sp_minor(sp: IrpSp) -> u8 {
-    core::ptr::read(sp.add(1))
+    core::ptr::read((sp as *const u8).add(1))
 }
 #[inline]
 pub unsafe fn sp_flags(sp: IrpSp) -> u8 {
-    core::ptr::read(sp.add(2))
+    core::ptr::read((sp as *const u8).add(2))
 }
 #[inline]
 pub unsafe fn sp_control(sp: IrpSp) -> u8 {
-    core::ptr::read(sp.add(3))
+    core::ptr::read((sp as *const u8).add(3))
 }
 #[inline]
 pub unsafe fn sp_file_object(sp: IrpSp) -> wdk_sys::PFILE_OBJECT {
@@ -371,7 +371,10 @@ pub unsafe fn sps_of(fo: wdk_sys::PFILE_OBJECT) -> *mut E4SectionObjectPointers 
 
 #[inline]
 pub unsafe fn set_sps(fo: wdk_sys::PFILE_OBJECT, sps: *mut E4SectionObjectPointers) {
-    core::ptr::write(addr_of_mut!((*fo).SectionObjectPointer), sps as *mut c_void);
+    core::ptr::write(
+        addr_of_mut!((*fo).SectionObjectPointer),
+        sps as *mut wdk_sys::_SECTION_OBJECT_POINTERS,
+    );
 }
 
 /// FileName (UNICODE_STRING) du FILE_OBJECT.
@@ -387,7 +390,7 @@ pub unsafe fn related_file_object(fo: wdk_sys::PFILE_OBJECT) -> wdk_sys::PFILE_O
 
 /// IoMarkIrpPending (bit SL_PENDING_RETURNED de la stack location courante).
 pub unsafe fn mark_pending(irp: wdk_sys::PIRP) {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let ctl = core::ptr::read((sp as *const u8).add(3));
     core::ptr::write((sp as *mut u8).add(3), ctl | 0x01);
 }

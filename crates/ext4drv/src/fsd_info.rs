@@ -6,16 +6,19 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ffi::c_void;
 use core::ptr::{addr_of, null_mut};
 
+use crate::fsd::{complete_irp, refresh_fcb};
 use crate::fsd_io;
+use crate::fsd_io::irp_buffer;
 use crate::fsd_types::*;
 use crate::fsd_xattr;
 use crate::ntdefs as nd;
 use crate::ntshim::*;
 use crate::uni;
 use wdk_sys::{
-    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex, KeQuerySystemTime},
+    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex},
     IO_STATUS_BLOCK, LARGE_INTEGER, PIRP,
 };
 
@@ -24,7 +27,7 @@ use wdk_sys::{
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -51,7 +54,7 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             }
         }
     };
-    let put64 = |o: usize, v: i64| v.to_le_bytes();
+    let put64 = |v: i64| v.to_le_bytes();
     let put32 = |v: u32| v.to_le_bytes();
 
     match class {
@@ -64,7 +67,7 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             w(16, &put64((*fcb).write));
             w(24, &put64((*fcb).change));
             w(32, &put32((*fcb).attributes));
-            complete_ok(irp, 40);
+            complete_ok(irp, 40)
         }
         nd::FIC_STANDARD_INFORMATION => {
             if out_len < 24 {
@@ -75,14 +78,14 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             w(16, &put32((*fcb).links));
             w(20, &[if (*ccb).delete_pending { 1 } else { 0 }]);
             w(21, &[if (*fcb).ftype == FCB_TYPE_DIR || (*fcb).ftype == FCB_TYPE_ROOT { 1 } else { 0 }]);
-            complete_ok(irp, 24);
+            complete_ok(irp, 24)
         }
         nd::FIC_INTERNAL_INFORMATION => {
             if out_len < 8 {
                 return complete_err_raw(irp, nd::st::BUFFER_TOO_SMALL);
             }
             w(0, &put64((*fcb).ino as i64));
-            complete_ok(irp, 8);
+            complete_ok(irp, 8)
         }
         nd::FIC_EA_INFORMATION => {
             if out_len < 4 {
@@ -94,14 +97,14 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
                 fsd_xattr::ea_total_size(vcb, (*fcb).ino)
             };
             w(0, &put32(total));
-            complete_ok(irp, 4);
+            complete_ok(irp, 4)
         }
         nd::FIC_ACCESS_INFORMATION => {
             if out_len < 4 {
                 return complete_err_raw(irp, nd::st::BUFFER_TOO_SMALL);
             }
             w(0, &put32(0x1F01FF)); // FILE_ALL_ACCESS simplifié
-            complete_ok(irp, 4);
+            complete_ok(irp, 4)
         }
         nd::FIC_NAME_INFORMATION => {
             let mut path = (*ccb).full_path.clone();
@@ -120,21 +123,21 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             for (i, wc) in path.iter().enumerate() {
                 w(4 + i * 2, &wc.to_le_bytes());
             }
-            complete_ok(irp, 4 + bytes);
+            complete_ok(irp, 4 + bytes)
         }
         nd::FIC_POSITION_INFORMATION => {
             if out_len < 8 {
                 return complete_err_raw(irp, nd::st::BUFFER_TOO_SMALL);
             }
             w(0, &put64((*ccb).position as i64));
-            complete_ok(irp, 8);
+            complete_ok(irp, 8)
         }
         nd::FIC_MODE_INFORMATION => {
             if out_len < 4 {
                 return complete_err_raw(irp, nd::st::BUFFER_TOO_SMALL);
             }
             w(0, &put32(0));
-            complete_ok(irp, 4);
+            complete_ok(irp, 4)
         }
         nd::FIC_ATTRIBUTE_TAG_INFORMATION => {
             if out_len < 8 {
@@ -142,7 +145,7 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             }
             w(0, &put32((*fcb).attributes));
             w(4, &put32((*fcb).reparse_tag));
-            complete_ok(irp, 8);
+            complete_ok(irp, 8)
         }
         nd::FIC_NETWORK_OPEN_INFORMATION => {
             if out_len < 56 {
@@ -155,7 +158,7 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             w(32, &put64((*fcb).alloc_size as i64));
             w(40, &put64((*fcb).size as i64));
             w(48, &put32((*fcb).attributes));
-            complete_ok(irp, 56);
+            complete_ok(irp, 56)
         }
         nd::FIC_ALL_INFORMATION => {
             let fixed = 96usize; // E4_ALL_INFO sans Name
@@ -200,7 +203,7 @@ pub unsafe fn dispatch_query_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
             for (i, wc) in path.iter().enumerate() {
                 w(104 + i * 2, &wc.to_le_bytes());
             }
-            complete_ok(irp, 104 + nb);
+            complete_ok(irp, 104 + nb)
         }
         nd::FIC_STREAM_INFORMATION => query_streams(vcb, irp, fcb, out, out_len),
         _ => complete_err_raw(irp, nd::st::INVALID_PARAMETER),
@@ -281,7 +284,7 @@ pub unsafe fn dispatch_set_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
     if (*vcb).read_only {
         return complete_err_raw(irp, nd::st::MEDIA_WRITE_PROTECTED);
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -372,7 +375,7 @@ pub unsafe fn dispatch_set_info(vcb: *mut Vcb, irp: PIRP) -> i32 {
                 return complete_err_raw(irp, nd::st::INVALID_PARAMETER);
             }
             if class == nd::FIC_ALLOCATION_INFORMATION && (new_size as u64) <= (*fcb).size {
-                complete_ok(irp, 0); // allocation ≤ taille : no-op
+                complete_ok(irp, 0) // allocation ≤ taille : no-op
             } else {
                 set_file_size(vcb, irp, fo, fcb, ccb, new_size as u64, advance_only)
             }
@@ -451,7 +454,7 @@ unsafe fn set_file_size(
     };
     CcSetFileSizes(fo as *mut c_void, &mut sizes);
     let mut t = LARGE_INTEGER::default();
-    KeQuerySystemTime(&mut t);
+    KeQuerySystemTime(&mut t as *mut LARGE_INTEGER as *mut i64);
     let now = core::ptr::read(core::ptr::addr_of!(t.QuadPart));
     (*fcb).write = now;
     (*fcb).change = now;
@@ -626,7 +629,7 @@ unsafe fn do_link(
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_query_volume(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let (out_len, class) = p_query_volume(sp);
     let out_len = out_len as usize;
     let out = match irp_buffer(irp, out_len) {

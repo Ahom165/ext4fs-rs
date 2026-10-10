@@ -58,11 +58,11 @@ impl ZwBlockDevice {
     pub fn open(path: &[u16], read_only: bool) -> Result<ZwBlockDevice> {
         let full = nt_path_prefix(path);
         let mut name_buf = full;
-        let nt_name = unicode_string(&mut name_buf);
+        let mut nt_name = unicode_string(&mut name_buf);
         let mut oa = OBJECT_ATTRIBUTES {
             Length: core::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: core::ptr::null_mut(),
-            ObjectName: &nt_name,
+            ObjectName: &mut nt_name,
             Attributes: (OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE) as u32,
             SecurityDescriptor: core::ptr::null_mut(),
             SecurityQualityOfService: core::ptr::null_mut(),
@@ -103,7 +103,7 @@ impl ZwBlockDevice {
                 &mut qiosb,
                 &mut std_info as *mut _ as *mut c_void,
                 core::mem::size_of::<FILE_STANDARD_INFORMATION>() as u32,
-                5u32, // FileStandardInformation
+                5i32, // FileStandardInformation
             )
         };
         if qstatus != 0 {
@@ -137,14 +137,14 @@ impl BlockDevice for ZwBlockDevice {
                 &mut iosb,
                 buf.as_mut_ptr() as *mut c_void,
                 buf.len() as u32,
-                &off,
+                &mut off,
                 core::ptr::null_mut(),
             )
         };
         if status != 0 {
             return Err(Error::Device(status));
         }
-        if iosb.Information < buf.len() {
+        if iosb.Information < buf.len() as u64 {
             return Err(Error::Device(0xC000_0001u32 as i32)); // STATUS_UNSUCCESSFUL
         }
         Ok(())
@@ -170,7 +170,7 @@ impl BlockDevice for ZwBlockDevice {
                 &mut iosb,
                 buf.as_ptr() as *const c_void as *mut c_void,
                 buf.len() as u32,
-                &off,
+                &mut off,
                 core::ptr::null_mut(),
             )
         };
@@ -204,7 +204,7 @@ impl TimeSource for KernelTime {
     fn now(&self) -> (u32, u32) {
         let mut t = LARGE_INTEGER::default();
         unsafe {
-            wdk_sys::ntddk::KeQuerySystemTime(&mut t);
+            crate::ntshim::KeQuerySystemTime(&mut t as *mut LARGE_INTEGER as *mut i64);
             // union : lecture unsafe requise
             let q = core::ptr::read(core::ptr::addr_of!(t.QuadPart));
             let unix = (q / 10_000_000) - 11_644_473_600;
@@ -239,12 +239,12 @@ impl DevBlockDevice {
         unsafe {
             let fo = IoCreateStreamFileObject(
                 core::ptr::null_mut(),
-                real_dev as wdk_sys::PDEVICE_OBJECT,
+                real_dev as *mut c_void,
             );
             if fo.is_null() {
                 return Err(Error::Device(nd::st::UNSUCCESSFUL));
             }
-            let dev = IoGetRelatedDeviceObject(fo);
+            let dev = IoGetRelatedDeviceObject(fo) as *mut DEVICE_OBJECT;
             if dev.is_null() {
                 ObDereferenceObject(fo as *mut c_void);
                 return Err(Error::Device(nd::st::UNSUCCESSFUL));
@@ -347,12 +347,12 @@ unsafe fn sync_fsd(
     off.QuadPart = offset;
     let irp = IoBuildSynchronousFsdRequest(
         major as u32,
-        dev,
+        dev as *mut c_void,
         buf,
         len as u32,
         &mut off,
         event as *mut _,
-        iosb,
+        iosb as *mut c_void,
     );
     if irp.is_null() {
         free_event(event);
@@ -364,7 +364,7 @@ unsafe fn sync_fsd(
         let _ = KeWaitForSingleObject(event as *mut _, 0 /* Executive */, KernelMode, 0, core::ptr::null_mut());
     }
     free_event(event);
-    core::ptr::read(core::ptr::addr_of!((*iosb).Status))
+    core::ptr::read(core::ptr::addr_of!((*iosb).__bindgen_anon_1.Status))
 }
 
 /// IOCTL synchrone sur device.
@@ -382,14 +382,14 @@ unsafe fn sync_devctrl(
     KeInitializeEvent(event as *mut _, 0, 0);
     let irp = IoBuildDeviceIoControlRequest(
         code,
-        dev,
+        dev as *mut c_void,
         input,
         in_len,
         output,
         out_len,
         0, // InternalDeviceControl = FALSE
         event as *mut _,
-        iosb,
+        iosb as *mut c_void,
     );
     if irp.is_null() {
         free_event(event);
@@ -400,7 +400,7 @@ unsafe fn sync_devctrl(
         let _ = KeWaitForSingleObject(event as *mut _, 0, KernelMode, 0, core::ptr::null_mut());
     }
     free_event(event);
-    core::ptr::read(core::ptr::addr_of!((*iosb).Status))
+    core::ptr::read(core::ptr::addr_of!((*iosb).__bindgen_anon_1.Status))
 }
 
 // KEVENT (layout x64 : DISPATCHER_HEADER 0x18 octets)

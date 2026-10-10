@@ -7,12 +7,14 @@ use core::ffi::c_void;
 use core::ptr::{addr_of, null_mut};
 
 use crate::fsd::ext4_attrs_to_win;
+use crate::fsd::complete_irp;
 use crate::fsd_types::*;
+use crate::fsd_info::{complete_err, complete_err_raw};
 use crate::ntdefs as nd;
 use crate::ntshim::*;
 use crate::uni;
 use wdk_sys::{
-    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex, KeQuerySystemTime},
+    ntddk::{ExAcquireFastMutex, ExReleaseFastMutex},
     IO_STATUS_BLOCK, LARGE_INTEGER, PIRP, UNICODE_STRING,
 };
 
@@ -29,7 +31,10 @@ unsafe fn cache_callbacks() -> *mut CACHE_MANAGER_CALLBACKS {
             ReleaseFromReadAhead: cc_release_readahead,
         });
     }
-    core::ptr::read(ptr).unwrap().as_mut_ptr()
+    match (*ptr).as_mut() {
+        Some(cb) => cb as *mut CACHE_MANAGER_CALLBACKS,
+        None => core::ptr::null_mut(),
+    }
 }
 
 unsafe extern "system" fn cc_acquire_lazy(ctx: *mut c_void, _wait: u8) -> u8 {
@@ -56,8 +61,8 @@ unsafe extern "system" fn cc_acquire_readahead(_ctx: *mut c_void, _wait: u8) -> 
 unsafe extern "system" fn cc_release_readahead(_ctx: *mut c_void) {}
 
 /// Récupère le buffer système d'un IRP (MDL ou SystemBuffer).
-unsafe fn irp_buffer(irp: PIRP, len: usize) -> Result<*mut c_void, i32> {
-    let mdl: *mut c_void = core::ptr::read(addr_of!((*irp).MdlAddress));
+pub unsafe fn irp_buffer(irp: PIRP, len: usize) -> Result<*mut c_void, i32> {
+    let mdl: *mut c_void = core::ptr::read(addr_of!((*irp).MdlAddress) as *const *mut c_void);
     if !mdl.is_null() {
         let addr = MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
         if addr.is_null() {
@@ -116,7 +121,7 @@ unsafe fn ensure_cache_map(vcb: *mut Vcb, fo: wdk_sys::PFILE_OBJECT, fcb: *mut F
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_read(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -176,11 +181,11 @@ pub unsafe fn dispatch_read(vcb: *mut Vcb, irp: PIRP) -> i32 {
             &mut iosb as *mut IO_STATUS_BLOCK as *mut c_void,
         );
         if ok == 0 {
-            let status = core::ptr::read(core::ptr::addr_of!(iosb.Status));
+            let status = core::ptr::read(core::ptr::addr_of!(iosb.__bindgen_anon_1.Status));
             return complete_err_raw(irp, if status == 0 { nd::st::UNSUCCESSFUL } else { status });
         }
         let info = core::ptr::read(core::ptr::addr_of!(iosb.Information));
-        complete_irp(irp, 0, info);
+        complete_irp(irp, 0, info as usize);
         0
     }
 }
@@ -193,7 +198,7 @@ pub unsafe fn dispatch_write(vcb: *mut Vcb, irp: PIRP) -> i32 {
     if (*vcb).read_only {
         return complete_err_raw(irp, nd::st::MEDIA_WRITE_PROTECTED);
     }
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -290,7 +295,7 @@ pub unsafe fn dispatch_write(vcb: *mut Vcb, irp: PIRP) -> i32 {
             0,
             &mut iosb as *mut IO_STATUS_BLOCK as *mut c_void,
         );
-        let flush_status = core::ptr::read(core::ptr::addr_of!(iosb.Status));
+        let flush_status = core::ptr::read(core::ptr::addr_of!(iosb.__bindgen_anon_1.Status));
         if flush_status != 0 {
             return complete_err_raw(irp, flush_status);
         }
@@ -309,7 +314,7 @@ pub unsafe fn dispatch_write(vcb: *mut Vcb, irp: PIRP) -> i32 {
 /// Met à jour les temps de modification (RAM FCB).
 unsafe fn touch_times(vcb: *mut Vcb, fcb: *mut Fcb, create: bool) {
     let mut t = LARGE_INTEGER::default();
-    KeQuerySystemTime(&mut t);
+    KeQuerySystemTime(&mut t as *mut LARGE_INTEGER as *mut i64);
     let now = core::ptr::read(core::ptr::addr_of!(t.QuadPart));
     (*fcb).write = now;
     (*fcb).change = now;
@@ -324,7 +329,7 @@ unsafe fn touch_times(vcb: *mut Vcb, fcb: *mut Fcb, create: bool) {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn dispatch_dirctl(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let minor: u8 = core::ptr::read(core::ptr::addr_of!((*sp).MinorFunction));
     match minor {
         nd::MN_QUERY_DIRECTORY => query_directory(vcb, irp),
@@ -339,7 +344,7 @@ pub const SL_RETURN_SINGLE_ENTRY: u8 = 0x02;
 pub const SL_INDEX_SPECIFIED: u8 = 0x04;
 
 unsafe fn query_directory(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -606,7 +611,7 @@ fn ftype_of(mode: u16) -> u8 {
 }
 
 unsafe fn notify_change(vcb: *mut Vcb, irp: PIRP) -> i32 {
-    let sp = (*irp).Tail.Overlay.CurrentStackLocation;
+    let sp = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
     let fo = file_object(sp);
     let ccb = fs_context2(fo) as *mut Ccb;
     let fcb = fs_context(fo) as *mut Fcb;
@@ -645,13 +650,13 @@ unsafe fn notify_change(vcb: *mut Vcb, irp: PIRP) -> i32 {
     if (*irp).PendingReturned != 0 {
         // IRP mis en attente par FsRtl : marque le slot (SL_PENDING_RETURNED)
         // et retourne STATUS_PENDING
-        let sp_cur = (*irp).Tail.Overlay.CurrentStackLocation;
+        let sp_cur = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
         let ctl = core::ptr::read((sp_cur as *const u8).add(3));
         core::ptr::write((sp_cur as *mut u8).add(3), ctl | 0x01);
         return 0x0000_0103u32 as i32; // STATUS_PENDING
     }
     // complété immédiatement par FsRtl : relais du statut (sans re-compléter)
-    core::ptr::read(core::ptr::addr_of!((*irp).IoStatus.Status))
+    core::ptr::read(core::ptr::addr_of!((*irp).IoStatus.__bindgen_anon_1.Status))
 }
 
 // ---------------------------------------------------------------------------
