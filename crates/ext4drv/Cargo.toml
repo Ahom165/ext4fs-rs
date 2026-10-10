@@ -1,0 +1,43 @@
+[package]
+categories = ["hardware-support"]
+description = "Pilote kernel Windows (wdk-rs, WDM) exposant ext4 via un device de contrôle IOCTL — embarque ext4-core no_std"
+edition = "2024"
+keywords = ["driver", "ext4", "windows", "wdm"]
+license = "MIT OR Apache-2.0"
+name = "ext4drv"
+publish = false
+readme = "../../README.md"
+version = "0.1.0"
+rust-version = "1.91"
+
+[package.metadata.wdk.driver-model]
+driver-type = "WDM"
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+wdk-build = "0.5.1"
+
+[dependencies]
+wdk = "0.4.1"
+wdk-alloc = "0.4.1"
+wdk-panic = "0.4.1"
+wdk-sys = "0.5.1"
+ext4-core = { path = "../ext4-core" }
+
+[features]
+default = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+lto = true
+panic = "abort"
+
+[lints.rust]
+# Le FSD manipule massivement des structures NT : les opérations unsafe dans
+# les fonctions unsafe sont tolérées (les invariants sont documentés en tête
+# de chaque module).
+unsafe_op_in_unsafe_fn = "allow"

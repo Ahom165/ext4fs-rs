@@ -1,0 +1,22 @@
+[package]
+name = "ext4ctl"
+description = "Outil de contrôle Windows du pilote ext4drv (IOCTL \\.\Ext4Fs) : mount/list/cat/extract/write/mkdir/rm/umount"
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_Security",
+] }
+
+[[bin]]
+name = "ext4ctl"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"

@@ -1,0 +1,6 @@
+/target/
+crates/*/target/
+dist/
+*.img
+scratch*
+*.zip

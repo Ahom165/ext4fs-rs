@@ -1,0 +1,21 @@
+[package]
+name = "ext4-core"
+description = "Moteur ext4 pur Rust (no_std + alloc) : lecture/écriture, extents, HTree, metadata_csum, journal jbd2, inline_data"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Aucune dépendance externe : 100% no_std friendly.
+
+[dev-dependencies]
+# Les tests d'intégration créent de vraies images ext4 via les outils système.
+
+[features]
+default = []
+# Tests d'intégration nécessitant std (images réelles, sous-processus)
+std-tests = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

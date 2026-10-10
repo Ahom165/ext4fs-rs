@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ext4-core",
+    "crates/ext4cli",
+]
+# ext4drv (pilote kernel wdk-rs) et ext4ctl (appli Windows) se compilent
+# uniquement sous Windows cible x86_64-pc-windows-msvc — exclus du workspace
+# pour que `cargo build/test` fonctionne sous Linux.
+exclude = [
+    "crates/ext4drv",
+    "crates/ext4ctl",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+authors = ["ext4fs-rs"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.driver-release]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
+codegen-units = 1

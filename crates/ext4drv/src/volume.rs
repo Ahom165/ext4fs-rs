@@ -1,0 +1,157 @@
+//! Registre des volumes montés (protégé par FAST_MUTEX).
+
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use core::cell::UnsafeCell;
+use ext4_core::fs::Filesystem;
+use wdk_sys::ntddk::{ExAcquireFastMutex, ExInitializeFastMutex, ExReleaseFastMutex};
+use wdk_sys::FAST_MUTEX;
+
+use crate::zpdev::{KernelTime, ZwBlockDevice};
+
+/// Un volume ext4 monté côté kernel. Le Filesystem possède l'appareil bloc
+/// (ZwBlockDevice) : son Drop referme le handle fichier.
+pub struct Volume {
+    pub id: u32,
+    pub read_only: bool,
+    pub fs: Filesystem,
+}
+
+/// Registre global : BTreeMap<id, Volume> sous FAST_MUTEX.
+pub struct VolumeRegistry {
+    mutex: FAST_MUTEX,
+    inner: UnsafeCell<RegistryInner>,
+    next_id: u32,
+}
+
+struct RegistryInner {
+    volumes: BTreeMap<u32, Volume>,
+    open_count: usize, // handles ouverts sur le device de contrôle
+}
+
+unsafe impl Sync for VolumeRegistry {}
+
+impl VolumeRegistry {
+    pub fn new() -> VolumeRegistry {
+        let mut mutex = FAST_MUTEX::default();
+        unsafe {
+            ExInitializeFastMutex(&mut mutex);
+        }
+        VolumeRegistry {
+            mutex,
+            inner: UnsafeCell::new(RegistryInner {
+                volumes: BTreeMap::new(),
+                open_count: 0,
+            }),
+            next_id: 1,
+        }
+    }
+
+    pub fn open_count_inc(&self) {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            (*self.inner.get()).open_count += 1;
+            ExReleaseFastMutex(&mut self.mutex);
+        }
+    }
+
+    pub fn open_count_dec(&self) -> usize {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let inner = &mut *self.inner.get();
+            inner.open_count -= 1;
+            let n = inner.open_count;
+            ExReleaseFastMutex(&mut self.mutex);
+            n
+        }
+    }
+
+    pub fn open_count(&self) -> usize {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let n = (*self.inner.get()).open_count;
+            ExReleaseFastMutex(&mut self.mutex);
+            n
+        }
+    }
+
+    /// Monte un volume ext4 (replay journal inclus). Retourne l'id du volume.
+    pub fn mount(&self, path: &[u16], read_only: bool) -> Result<u32, i32> {
+        let device = match ZwBlockDevice::open(path, read_only) {
+            Ok(d) => d,
+            Err(ext4_core::Error::Device(c)) => return Err(c),
+            Err(_) => return Err(0xC000_00BBu32 as i32), // STATUS_NOT_SUPPORTED
+        };
+        let ro = read_only || device.is_read_only();
+        let fs = match Filesystem::mount(Box::new(device), Box::new(KernelTime), read_only) {
+            Ok(fs) => fs,
+            Err(e) => {
+                wdk::println!("ext4drv: montage échoué: {e}");
+                return Err(0xC000_00BBu32 as i32); // STATUS_NOT_SUPPORTED
+            }
+        };
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let inner = &mut *self.inner.get();
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            inner.volumes.insert(id, Volume { id, read_only: ro, fs });
+            ExReleaseFastMutex(&mut self.mutex);
+        }
+        Ok(id)
+    }
+
+    pub fn unmount(&self, id: u32) -> Result<(), i32> {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let inner = &mut *self.inner.get();
+            match inner.volumes.remove(&id) {
+                Some(mut v) => {
+                    let _ = v.fs.unmount();
+                    ExReleaseFastMutex(&mut self.mutex);
+                    Ok(())
+                }
+                None => {
+                    ExReleaseFastMutex(&mut self.mutex);
+                    Err(0xC000_0004u32 as i32) // STATUS_INVALID_HANDLE
+                }
+            }
+        }
+    }
+
+    /// Accès exclusif à un volume pendant le traitement d'une requête.
+    pub fn with_volume<R>(
+        &self,
+        id: u32,
+        f: impl FnOnce(&mut Volume) -> Result<R, i32>,
+    ) -> Result<R, i32> {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let inner = &mut *self.inner.get();
+            let result = match inner.volumes.get_mut(&id) {
+                Some(v) => f(v),
+                None => Err(0xC000_0004u32 as i32), // STATUS_INVALID_HANDLE
+            };
+            ExReleaseFastMutex(&mut self.mutex);
+            result
+        }
+    }
+
+    pub fn first_volume_id(&self) -> Option<u32> {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let id = (*self.inner.get()).volumes.keys().next().copied();
+            ExReleaseFastMutex(&mut self.mutex);
+            id
+        }
+    }
+
+    pub fn has_volumes(&self) -> bool {
+        unsafe {
+            ExAcquireFastMutex(&mut self.mutex);
+            let n = !(*self.inner.get()).volumes.is_empty();
+            ExReleaseFastMutex(&mut self.mutex);
+            n
+        }
+    }
+}

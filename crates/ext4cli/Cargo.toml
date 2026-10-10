@@ -1,0 +1,10 @@
+[package]
+name = "ext4cli"
+description = "CLI ext4 multiplateforme (info/list/tree/cat/extract/mkdir/write/rm) sur image ou périphérique bloc"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ext4-core = { path = "../ext4-core" }
