@@ -271,3 +271,66 @@ Reste (v3) :
 - renommage d'un flux alternatif non supporté (STATUS_UNSUCCESSFUL) ;
 - metadata_csum + extents requis en écriture (règles phase 1) ;
 - symlinks rapides ≤ 58 octets pour SET_REPARSE_POINT.
+
+---
+
+# Phase 3 — mkfs : formater un disque en ext4 depuis Windows
+
+## 16. Moteur de formatage (`crates/ext4-core/src/mkfs.rs`)
+
+`mkfs(&mut dev, &opts, now)` construit un ext4 complet **en une seule
+passe d'écritures** (aucune lecture requise) :
+
+1. **Géométrie** : bs = 1024<<block_log (1K/2K/4K…64K), bpg = 8·bs (bitmap
+   d'un bloc), groupes = ceil(total/fdb/bpg), ipg dérivé d'inode_ratio
+   (multiple de bs/256), itable 256 octets/inode, GDT 64 octets/desc (64bit).
+2. **Journal interne** : bandes contiguës (≤ 4 extents de ≤ 32K blocs)
+   prises dans les zones de données des premiers groupes ; inode 8 en
+   extents, size = journal_len·bs.
+3. **Superblock** : features `has_journal, ext_attr, dir_index, filetype,
+   extents, 64bit, sparse_super, large_file, huge_file, dir_nlink,
+   extra_isize, metadata_csum` ; pas de resize_inode/flex_bg (choix v1) ;
+   **s_journal_uuid (0xD0) laissé À ZÉRO** — e2fsprogs (e2fsck/journal.c:
+   1000) traite tout UUID non nul comme un journal *externe* (« Can't find
+   external journal ») ; `s_journal_inum` = 8 à 0xE0 ; reserved 5 %.
+4. **GDT + sauvegardes éparses** : sb de secours + GDT complète dans les
+   groupes puissances de 3/5/7 ; checksums GDT crc32c(seed, groupe u32 +
+   desc, tronqué 16 bits), bitmaps (blocs : bloc entier, inodes :
+   (ipg+7)/8), inodes (0x7C/0x82), répertoires (tail 12 o).
+5. **Bitmaps/tables** : groupes ≥ 1 itable zéro + `itable_unused` complet,
+   flag INODE_ZEROED ; groupe 0 : root (« . », « .. », lost+found) et
+   lost+found (liens 1, taille 1K, `S_IFDIR|0755`).
+6. **jsb jbd2** : recette exacte de `mkjournal.c
+   (ext2fs_create_journal_superblock2)` — memset 0, magic, blocktype V2,
+   blocksize, maxlen, first=1, sequence=1, nr_users=1, **s_uuid = UUID du
+   FS** ; features/checksum laissés à zéro (le noyau — ou notre moteur —
+   les posera au premier commit, comme sur une image mke2fs neuve).
+
+Calibration : la sortie passe `e2fsck -fn` (e2fsprogs 1.47.2) sur les
+profils testés (64 MiB 4K journalisé, 32 MiB 1K sans journal, 256 MiB
+multi-groupes avec backup sb+GDT du groupe 1), est relisible/écrivable par
+debugfs (aller-retour 70 000 octets), remonte par le moteur lui-même, et
+honore label/reserved_pct (assertion « Reserved block count: 40 » pour
+1 % de 16 MiB). Tests : `cargo test --features std-tests --test mkfs_cal`.
+
+## 17. Chemin de formatage Windows (`ext4ctl format`)
+
+Purement **user-mode** — aucun IOCTL pilote n'est nécessaire (même modèle
+que format.com) :
+
+1. `CreateFileW(\\.\X:, GENERIC_READ|WRITE, share rw)` — volume brut ;
+2. `IOCTL_DISK_GET_LENGTH_INFO` (taille) + `IOCTL_DISK_GET_DRIVE_GEOMETRY`
+   (secteur natif, ≥ 512) ; bornes : 1 MiB..16 TiB (périmètre testé) ;
+3. `FSCTL_LOCK_VOLUME` (exclusivité — échoue si fichiers ouverts/pagefile)
+   puis `FSCTL_DISMOUNT_VOLUME` (démonte le FS présent) ;
+4. `ext4_core::mkfs` à travers `RawVolume`, un `BlockDevice` sur HANDLE :
+   les écritures du moteur (offsets quelconques) sont fusionnées dans des
+   **secteurs entiers** avec lecture-modification-écriture — correct sur
+   512e comme sur 4Kn ; flush final = `FlushFileBuffers` ;
+5. `FSCTL_UNLOCK_VOLUME`, fermeture. UUID v4 généré localement
+   (RandomState, entropie OS) ; `--uuid` impose une valeur.
+
+Options : `--label`, `--journal <MiB>` / `--no-journal`, `--1k/--2k/--4k`,
+`--ratio`, `--reserved`, `--uuid`, `--yes` (sinon confirmation en tapant la
+cible). Après formatage : `ext4ctl fsd-mount \\.\X:` → lettre dans
+l'Explorateur ; le volume est également montable par Linux (e2fsck propre).

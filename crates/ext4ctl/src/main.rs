@@ -5,6 +5,8 @@
 
 #![allow(non_snake_case)]
 
+mod format;
+
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
@@ -28,6 +30,8 @@ const IOCTL_EXT4_CREATE_FILE: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x806, 0, 2);
 const IOCTL_EXT4_MKDIR: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x807, 0, 2);
 const IOCTL_EXT4_UNLINK: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x808, 0, 2);
 const IOCTL_EXT4_RMDIR: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x809, 0, 2);
+/// Réservé v3 : commande `stat` prévue (infos inode étendues côté FSD).
+#[allow(dead_code)]
 const IOCTL_EXT4_STAT: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x80B, 0, 1);
 
 #[repr(C)]
@@ -358,7 +362,11 @@ fn usage() -> ! {
 Commandes FSD (phase 2 — volume natif dans l'Explorateur) :\n\
   fsd-mount <\\\\.\\Lettre: | \\\\.\\HarddiskVolumeN>  force le montage ext4 d'un volume\n\
   fsd-unmount <Lettre:>                                 démonte proprement (flush + journal)\n\
-  fsd-status                                            liste les volumes ext4 montés par le FSD"
+  fsd-status                                            liste les volumes ext4 montés par le FSD\n\n\
+Commandes de formatage (user-mode, volume brut verrouillé) :\n\
+  format <\\\\.\\Lettre: | \\\\.\\HarddiskVolumeN> [--label N] [--journal MiB] [--no-journal]\n\
+         [--1k|--2k|--4k] [--ratio o/inode] [--reserved %%] [--uuid hex32] [--yes]\n\
+  ex : ext4ctl format \\\\.\\E: --label Photos --4k --yes"
     );
     std::process::exit(2);
 }
@@ -387,6 +395,8 @@ fn main() {
         "fsd-mount" => cmd_fsd_mount(rest),
         "fsd-unmount" => cmd_fsd_unmount(rest),
         "fsd-status" => cmd_fsd_status(rest),
+        // --- formatage user-mode (volume brut verrouillé + moteur mkfs)
+        "format" => format::cmd_format(rest),
         _ => usage(),
     }
     unsafe {
@@ -433,7 +443,7 @@ fn cmd_fsd_mount(rest: &[String]) {
             std::ptr::null(),
             OPEN_EXISTING,
             0, // pas de flag
-            0,
+            std::ptr::null_mut(),
         );
         if h == INVALID_HANDLE_VALUE {
             // réessaie en lecture seule
@@ -444,7 +454,7 @@ fn cmd_fsd_mount(rest: &[String]) {
                 std::ptr::null(),
                 OPEN_EXISTING,
                 0,
-                0,
+                std::ptr::null_mut(),
             );
             if h2 == INVALID_HANDLE_VALUE {
                 let e = GetLastError();
@@ -478,7 +488,7 @@ fn cmd_fsd_unmount(rest: &[String]) {
             std::ptr::null(),
             OPEN_EXISTING,
             0,
-            0,
+            std::ptr::null_mut(),
         );
         if h == INVALID_HANDLE_VALUE {
             let e = GetLastError();
@@ -522,7 +532,7 @@ fn cmd_fsd_status(_rest: &[String]) {
                 std::ptr::null(),
                 OPEN_EXISTING,
                 0,
-                0,
+                std::ptr::null_mut(),
             );
             if h == INVALID_HANDLE_VALUE {
                 continue;

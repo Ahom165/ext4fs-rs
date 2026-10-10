@@ -1,6 +1,6 @@
 [package]
 name = "ext4ctl"
-description = "Outil de contrôle Windows du pilote ext4drv (IOCTL \\.\Ext4Fs) : mount/list/cat/extract/write/mkdir/rm/umount"
+description = 'Outil de contrôle Windows du pilote ext4drv (IOCTL \\.\Ext4Fs) : mount/list/cat/extract/write/mkdir/rm/umount/format'
 edition = "2024"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
@@ -13,6 +13,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",
     "Win32_Security",
 ] }
+# Moteur mkfs (no_std + alloc, sans features) : le formatage écrit le
+# superblock/GDT/bitmaps/inodes/journal via notre BlockDevice volume brut.
+ext4-core = { path = "../ext4-core" }
 
 [[bin]]
 name = "ext4ctl"

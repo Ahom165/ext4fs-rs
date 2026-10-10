@@ -57,10 +57,14 @@ impl Filesystem {
             alloc_hint: 0,
             dirty: false,
         };
-        // Replay du journal (écritures directes, cache encore vide)
+        // Replay du journal (écritures directes, cache encore vide).
+        // Log VIDE + montage RO : ne rien écrire (comportement noyau — un
+        // montage RO propre ne touche pas au disque, cf. ext4_fill_super).
         if fs.sb.has_journal() && fs.sb.journal_inum != 0 {
             let mut j = Journal::load(&mut *fs.dev, &fs.sb)?;
-            j.replay(&mut *fs.dev)?;
+            if j.start != 0 || !effective_ro {
+                j.replay(&mut *fs.dev)?;
+            }
             fs.sb.set_incompat(feat_incompat::RECOVER, false);
             fs.journal = Some(j);
         }

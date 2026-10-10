@@ -17,7 +17,8 @@ architecture **hybride** :
   - **Device de contrôle `\\.\Ext4Fs`** (phase 1, conservé) : IOCTLs pour
     explorer des **images fichiers** ext4 depuis le kernel.
 - **`ext4ctl`** — outil Windows user-mode : commandes phase 1 (images) +
-  commandes FSD (`fsd-mount`, `fsd-unmount`, `fsd-status`).
+  commandes FSD (`fsd-mount`, `fsd-unmount`, `fsd-status`) + **formatage
+  ext4 d'un volume brut** (`format`, phase 3).
 - **`ext4cli`** — CLI multiplateforme (Linux/Windows) sur image fichier :
   même moteur, idéale pour tester sans kernel (info/list/tree/cat/extract/
   write/mkdir/rm/link/symlink/mv/touch + EAs : ea_list/ea_get/ea_set/ea_rm).
@@ -42,7 +43,8 @@ architecture **hybride** :
 ## 1. Ce qui est prouvé (tests automatisés)
 
 `ext4-core` est validé contre de **vraies images** créées par `mkfs.ext4`
-(e2fsprogs 1.47.2) — **33 tests d'intégration + 7 unitaires (40 au total)** :
+(e2fsprogs 1.47.2) — **33 tests d'intégration + 7 unitaires + 5 tests
+mkfs (45 au total)** :
 
 | Domaine | Vérification |
 |---|---|
@@ -53,6 +55,7 @@ architecture **hybride** :
 | Journal | écriture + **crash simulé** → replay **maison** == replay **e2fsck** (l'implémentation noyau), multi-transactions (600 ko), checksums v3 |
 | inline_data | fichiers ≤ 60 o inline (lisibles par debugfs), conversion automatique en extents au-delà |
 | xattrs (EAs) | set/remove/list/get `user.`/`security.`/`trusted.` : bloc EA + corps d'inode, csum variante debugfs, e_hash exact (0xdf1d5a5b validé), aller-retour **moteur écrit → debugfs relit → e2fsck -fn propre** |
+| mkfs (formatage) | image produite par le moteur : **e2fsck -fn propre** (4K journalisé, 1K sans journal, 256 MiB multi-groupes + backup sb/GDT), roundtrip debugfs 70 ko, remontage par le moteur, label/réservé honorés, refus volume trop petit |
 | Refus propres | volumes chiffrés (fscrypt), BIGALLOC/MMP/META_BG, magic invalide, montage RO |
 
 Lancer les tests (Linux, e2fsprogs requis) :
@@ -157,6 +160,30 @@ ext4ctl fsd-unmount E:                   # démontage propre
 Validation recommandée après une session d'écriture : sur la machine Linux,
 `e2fsck -fn /dev/sdXN` doit être **propre** (le journal a été maintenu par le
 pilote, replay compatible kernel).
+
+### Formater un disque en ext4 depuis Windows (phase 3)
+
+`ext4ctl format` écrit un ext4 complet sur un volume brut — purement
+user-mode, même modèle que format.com (verrou exclusif + démontage, aucun
+IOCTL pilote) :
+
+```powershell
+# formate E: en ext4 (4K, journal 4 MiB, confirmation en tapant la cible)
+ext4ctl format \\.\E:
+
+# options : label, taille de bloc, journal, ratio d'inodes, réservé, uuid
+ext4ctl format \\.\E: --label Photos --4k --journal 16 --yes
+ext4ctl format \\.\E: --no-journal --1k --ratio 8192 --reserved 1 --yes
+ext4ctl format \\.\PhysicalDrive2 --label Backup --yes
+
+# puis monte-le dans l'Explorateur
+ext4ctl fsd-mount \\.\E:
+```
+
+Le volume produit passe `e2fsck -fn` côté Linux et se monte par le pilote
+comme par n'importe quel Linux ext4. Bornes v1 : 1 MiB..16 TiB, admin
+requis ; le verrou refusera le formatage si des fichiers sont ouverts ou
+qu'une pagefile réside sur le volume.
 
 ## 4. Sécurité des données (à lire avant d'écrire)
 

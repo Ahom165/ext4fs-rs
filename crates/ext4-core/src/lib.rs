@@ -24,6 +24,7 @@ pub mod fsops;
 pub mod gdt;
 pub mod inode;
 pub mod journal;
+pub mod mkfs;
 pub mod superblock;
 pub mod util;
 pub mod xattr;
