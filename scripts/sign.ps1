@@ -1,23 +1,32 @@
-# sign.ps1 — signature de test du pilote ext4drv.sys
+# sign.ps1 - signature de test du pilote ext4drv.sys
 #
-# Crée (une fois) un certificat auto-signé "ext4fs-rs Test", l'installe dans
-# Root + TrustedPublisher, signe ext4drv.sys et vérifie la signature.
-# Nécessite le "test mode" Windows déjà activé (bcdedit /set testsigning on).
+# ASCII pur volontaire (voir build.ps1 : PowerShell 5.1 + .ps1 sans BOM).
+#
+# Cree (une seule fois) un certificat de signature de code auto-signe
+# "ext4fs-rs Test", l'installe dans les magasins LocalMachine Root et
+# TrustedPublisher, signe dist\ext4drv.sys en Authenticode SHA256, puis
+# verifie la signature.
+#
+# Prerequis : console administrateur, test mode deja actif :
+#   bcdedit /set testsigning on
 #
 # Usage : .\scripts\sign.ps1
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot | Split-Path | Split-Path
-$Sys  = Join-Path $Root "dist\ext4drv.sys"
-$Cert = Join-Path $Root "dist\ext4fs-rs-test.pfx"
+$Root    = Split-Path $PSScriptRoot
+$SysPath = Join-Path $Root "dist\ext4drv.sys"
+$PfxPath = Join-Path $Root "dist\ext4fs-rs-test.pfx"
+$CertName    = "ext4fs-rs Test"
+$PfxPassword = "ext4fs-rs-test"
 
-if (-not (Test-Path $Sys)) { throw "dist\ext4drv.sys absent — lancer build.ps1 d'abord" }
+if (-not (Test-Path $SysPath)) {
+    throw "dist\ext4drv.sys absent - lancer scripts\build.ps1 d'abord"
+}
 
-$CertName = "ext4fs-rs Test"
-
-if (-not (Test-Path $Cert)) {
-    Write-Host "== Création du certificat de test $CertName ==" -ForegroundColor Cyan
-    $cert = New-SelfSignedCertificate `
+# 1. Certificat de test : cree une fois, exporte en PFX dans dist\
+if (-not (Test-Path $PfxPath)) {
+    Write-Host "== Creation du certificat de test '$CertName' ==" -ForegroundColor Cyan
+    $codeCert = New-SelfSignedCertificate `
         -Subject "CN=$CertName" `
         -Type CodeSigningCert `
         -KeyUsage DigitalSignature `
@@ -26,22 +35,28 @@ if (-not (Test-Path $Cert)) {
         -KeyLength 2048 `
         -HashAlgorithm SHA256 `
         -NotAfter (Get-Date).AddYears(5)
-    $pwdPlain = "ext4fs-rs-test"
-    $secPwd = ConvertTo-SecureString -String $pwdPlain -Force -AsPlainText
-    Export-PfxCertificate -Cert $cert -FilePath $Cert -Password $secPwd | Out-Null
-    Write-Host "Certificat exporté : $Cert (mot de passe: $pwdPlain)"
+    $secPwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
+    Export-PfxCertificate -Cert $codeCert -FilePath $PfxPath -Password $secPwd | Out-Null
+    Write-Host "Certificat exporte : $PfxPath (mot de passe : $PfxPassword)"
 }
 
+# 2. Installation dans LocalMachine Root + TrustedPublisher
 Write-Host "== Installation du certificat (LocalMachine Root + TrustedPublisher) =="
-$secPwd = ConvertTo-SecureString -String "ext4fs-rs-test" -Force -AsPlainText
-Import-PfxCertificate -FilePath $Cert -CertStoreLocation Cert:\LocalMachine\Root -Password $secPwd | Out-Null
-Import-PfxCertificate -FilePath $Cert -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -Password $secPwd | Out-Null
+$secPwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
+Import-PfxCertificate -FilePath $PfxPath -CertStoreLocation Cert:\LocalMachine\Root -Password $secPwd | Out-Null
+Import-PfxCertificate -FilePath $PfxPath -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -Password $secPwd | Out-Null
 
+# 3. Signature Authenticode du pilote
 Write-Host "== Signature Authenticode de ext4drv.sys =="
-$certThumb = (Get-PfxCertificate -FilePath $Cert).Thumbprint
-Set-AuthenticodeSignature -FilePath $Sys -Certificate (Get-Item "Cert:\LocalMachine\My\$certThumb") -HashAlgorithm SHA256 | Format-List
+$thumb = (Get-PfxCertificate -FilePath $PfxPath).Thumbprint
+Set-AuthenticodeSignature -FilePath $SysPath `
+    -Certificate (Get-Item "Cert:\LocalMachine\My\$thumb") `
+    -HashAlgorithm SHA256 | Format-List Status, StatusMessage, SignerCertificate
 
-Write-Host "== Vérification =="
-Get-AuthenticodeSignature $Sys | Format-List Status, StatusMessage, SignerCertificate
+# 4. Verification
+Write-Host "== Verification =="
+Get-AuthenticodeSignature -FilePath $SysPath |
+    Format-List Status, StatusMessage, SignerCertificate
 
-Write-Host "Signé. Le test mode (bcdedit /set testsigning on) doit être actif pour le chargement." -ForegroundColor Green
+Write-Host "Pilote signe. Le test mode doit rester actif pour le chargement :" -ForegroundColor Green
+Write-Host "  bcdedit /set testsigning on" -ForegroundColor Green

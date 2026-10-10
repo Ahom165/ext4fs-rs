@@ -36,6 +36,14 @@ panic = "abort"
 lto = true
 panic = "abort"
 
+# Profil dédié au pilote. Redéfini ici car ext4drv est exclu du workspace
+# racine : un profil cargo doit être déclaré dans le Cargo.toml racine de
+# SON propre workspace, sinon `cargo build --profile driver-release` échoue.
+[profile.driver-release]
+inherits = "release"
+opt-level = "z"
+codegen-units = 1
+
 [lints.rust]
 # Le FSD manipule massivement des structures NT : les opérations unsafe dans
 # les fonctions unsafe sont tolérées (les invariants sont documentés en tête
