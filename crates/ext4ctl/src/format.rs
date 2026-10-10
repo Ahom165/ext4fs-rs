@@ -35,6 +35,7 @@ const FSCTL_UNLOCK_VOLUME: u32 = 0x0009_001C; // CTL_CODE(9, 7, BUFFERED, ANY)
 const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020; // CTL_CODE(9, 8, BUFFERED, ANY)
 const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_4450; // CTL_CODE(7, 0x114, BUFFERED, READ)
 const IOCTL_DISK_GET_DRIVE_GEOMETRY: u32 = 0x0007_0000; // CTL_CODE(7, 0, BUFFERED, ANY)
+const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0; // CTL_CODE(7, 0x28, BUFFERED, ANY)
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
@@ -427,13 +428,38 @@ pub fn cmd_format(rest: &[String]) {
     // 1) Ouverture du volume brut
     let h = open_volume(&target);
 
-    // 2) Taille + secteur natif
-    let len_info = volume_ioctl(h, IOCTL_DISK_GET_LENGTH_INFO, 8)
-        .unwrap_or_else(|e| ioctl_err_phrase(&e, "IOCTL_DISK_GET_LENGTH_INFO"));
-    let size = i64::from_le_bytes(len_info[0..8].try_into().unwrap()) as u64;
-    let geo = volume_ioctl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY, 24)
-        .unwrap_or_else(|e| ioctl_err_phrase(&e, "IOCTL_DISK_GET_DRIVE_GEOMETRY"));
-    let sector = u32::from_le_bytes(geo[20..24].try_into().unwrap()).max(512);
+    // 2) Taille exacte + secteur natif.
+    //    GET_LENGTH_INFO (répondu par partmgr) peut être refusé avec
+    //    INVALID_DEVICE_REQUEST sur certains volumes virtuels tout juste
+    //    attachés (constaté sur VHD Windows 11 Insider, erreur 0x1).
+    //    Chaîne de repli : GET_DRIVE_GEOMETRY_EX (DiskSize exact, répondu
+    //    par disk.sys/vhdmp) puis produit-geometry (borne haute, dernier
+    //    recours — le format reste valide, juste calé sur cette taille).
+    let geo_ex = volume_ioctl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, 64).ok();
+    let (size, sector) = if let Ok(li) = volume_ioctl(h, IOCTL_DISK_GET_LENGTH_INFO, 8) {
+        let size = i64::from_le_bytes(li[0..8].try_into().unwrap()) as u64;
+        let geo = match &geo_ex {
+            Some(g) => g[0..24].to_vec(),
+            None => volume_ioctl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY, 24)
+                .unwrap_or_else(|e| ioctl_err_phrase(&e, "IOCTL_DISK_GET_DRIVE_GEOMETRY")),
+        };
+        let sector = u32::from_le_bytes(geo[20..24].try_into().unwrap()).max(512);
+        (size, sector)
+    } else if let Some(g) = &geo_ex {
+        let size = i64::from_le_bytes(g[24..32].try_into().unwrap()) as u64;
+        let sector = u32::from_le_bytes(g[20..24].try_into().unwrap()).max(512);
+        eprintln!("note : taille via GET_DRIVE_GEOMETRY_EX (GET_LENGTH_INFO refusé par ce volume)");
+        (size, sector)
+    } else {
+        let geo = volume_ioctl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY, 24)
+            .unwrap_or_else(|e| ioctl_err_phrase(&e, "IOCTL_DISK_GET_DRIVE_GEOMETRY"));
+        let sector = u32::from_le_bytes(geo[20..24].try_into().unwrap()).max(512);
+        let cyl = i64::from_le_bytes(geo[0..8].try_into().unwrap()) as u64;
+        let tpc = u32::from_le_bytes(geo[12..16].try_into().unwrap()) as u64;
+        let spt = u32::from_le_bytes(geo[16..20].try_into().unwrap()) as u64;
+        eprintln!("note : taille via produit-geometry (borne haute) — GET_LENGTH_INFO refusé");
+        (cyl * tpc * spt * sector as u64, sector)
+    };
     if size < MIN_FORMAT_BYTES || size > MAX_FORMAT_BYTES {
         eprintln!(
             "volume de {size} octets hors bornes supportées ({MIN_FORMAT_BYTES}..{MAX_FORMAT_BYTES})"

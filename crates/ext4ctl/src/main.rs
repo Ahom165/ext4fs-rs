@@ -33,6 +33,8 @@ const IOCTL_EXT4_RMDIR: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x809, 0, 2);
 /// Réservé v3 : commande `stat` prévue (infos inode étendues côté FSD).
 #[allow(dead_code)]
 const IOCTL_EXT4_STAT: u32 = ctl_code(FILE_DEVICE_UNKNOWN, 0x80B, 0, 1);
+/// FSCTL standard : démonte le FS présent sur un volume (coup de pied à RawFS).
+const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020; // CTL_CODE(9, 8, BUFFERED, ANY)
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -456,6 +458,7 @@ fn cmd_fsd_mount(rest: &[String]) {
     wpath.push(0);
     println!("ext4ctl : tentative de montage de {target} ...");
     unsafe {
+        // 1) validation : le volume s'ouvre (RW, sinon RO)
         let h = CreateFileW(
             wpath.as_ptr(),
             0x8000_0000 | 0x4000_0000, // GENERIC_READ | GENERIC_WRITE
@@ -465,7 +468,7 @@ fn cmd_fsd_mount(rest: &[String]) {
             0, // pas de flag
             std::ptr::null_mut(),
         );
-        if h == INVALID_HANDLE_VALUE {
+        let h = if h == INVALID_HANDLE_VALUE {
             // réessaie en lecture seule
             let h2 = CreateFileW(
                 wpath.as_ptr(),
@@ -481,12 +484,48 @@ fn cmd_fsd_mount(rest: &[String]) {
                 eprintln!("échec d'ouverture ({e:#x}) : le volume n'est peut-être pas ext4");
                 std::process::exit(1);
             }
-            CloseHandle(h2);
+            h2
         } else {
-            CloseHandle(h);
+            h
+        };
+        // 2) coup de pied : démonte le FS présent (RawFS sur un volume neuf).
+        //    Une ouverture DIRECTE de volume ne déclenche PAS la sonde de
+        //    montage tant qu'un FS est monté : sans ce dismount, RawFS reste
+        //    propriétaire et ext4drv ne reçoit jamais IRP_MN_MOUNT_VOLUME.
+        let mut ret: u32 = 0;
+        let kicked = DeviceIoControl(
+            h,
+            FSCTL_DISMOUNT_VOLUME,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut ret,
+            std::ptr::null_mut(),
+        );
+        if kicked == 0 {
+            let e = GetLastError();
+            eprintln!(
+                "note : dismount refusé (erreur {e:#x}) — volume occupé ? fermez les fenêtres de l'Explorateur sur cette lettre."
+            );
+        }
+        CloseHandle(h);
+        // 3) réouverture : le volume est démonté, cette ouverture déclenche la
+        //    sonde de montage ; ext4drv reconnaît le superblock ext4 et monte.
+        let h2 = CreateFileW(
+            wpath.as_ptr(),
+            0x8000_0000, // GENERIC_READ
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if h2 != INVALID_HANDLE_VALUE {
+            CloseHandle(h2);
         }
     }
-    println!("montage déclenché. Le mount manager attribue la lettre de lecteur ;\nvérifiez avec fsd-status ou l'Explorateur (F5 pour rafraîchir).");
+    println!("montage déclenché (dismount + sonde de montage). Vérifiez avec\nfsd-status ou l'Explorateur (F5 pour rafraîchir).");
 }
 
 /// Démonte proprement : FSCTL_DISMOUNT_VOLUME sur la lettre.
