@@ -76,7 +76,7 @@ foreach ($storeName in @("Root", "TrustedPublisher")) {
 # 3. Signature Authenticode du pilote (certificat du magasin, cle privee incluse)
 Write-Host "== Signature Authenticode de ext4drv.sys =="
 Set-AuthenticodeSignature -FilePath $SysPath `
-    -SigningCert $signCert -HashAlgorithm SHA256 |
+    -Certificate $signCert -HashAlgorithm SHA256 |
     Format-List Status, StatusMessage, SignerCertificate
 
 # 4. Verification
