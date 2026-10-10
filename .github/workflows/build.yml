@@ -1,0 +1,105 @@
+# build.yml - compilation CI du pilote + outils (aucun WDK a installer chez toi)
+#
+# Le runner windows-2022 a deja VS2022 (MSVC + link.exe). Il ne manque que :
+#   - le WDK (installe via winget, ~3 min)
+#   - LLVM/libclang pour bindgen (wdk-sys genere ses bindings a la compilation)
+#
+# Artefact produit : ext4fs-rs-dist (dist/ext4drv.sys + ext4ctl.exe + ext4cli.exe)
+# Utilisation locale ensuite : sign.ps1 puis install.ps1 (PowerShell pur, sans WDK).
+
+name: build-driver
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - ".github/workflows/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo +stable --version
+
+      - name: LLVM/libclang pour bindgen
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files\LLVM\bin\libclang.dll')) {
+            Write-Host "libclang absent - installation via chocolatey"
+            choco install llvm -y --no-progress
+          }
+          Write-Host "libclang present: $(Test-Path 'C:\Program Files\LLVM\bin\libclang.dll')"
+
+      - name: Installation WDK 10.0.26100
+        shell: pwsh
+        run: |
+          winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "== winget a echoue (code $LASTEXITCODE), WDK disponibles =="
+            winget search WindowsWDK
+            exit 1
+          }
+          Write-Host "WDK installe : $(Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include')"
+
+      - name: Build ext4-core + ext4cli (workspace)
+        shell: pwsh
+        env:
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+        run: |
+          cargo build -p ext4-core --release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo build -p ext4cli --release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build pilote ext4drv (WDK)
+        shell: pwsh
+        env:
+          LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+          WDKContentRoot: 'C:\Program Files (x86)\Windows Kits\10'
+        working-directory: crates/ext4drv
+        run: |
+          cargo build --profile driver-release 2>&1 | Tee-Object -FilePath ..\..\driver-build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build ext4ctl (user-mode)
+        shell: pwsh
+        working-directory: crates/ext4ctl
+        run: |
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Assemblage dist\
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item crates\ext4drv\target\driver-release\ext4drv.dll dist\ext4drv.sys
+          Copy-Item crates\ext4ctl\target\release\ext4ctl.exe dist\
+          Copy-Item target\release\ext4cli.exe dist\
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload artefact dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: ext4fs-rs-dist
+          path: dist/
+
+      - name: Upload log pilote si echec
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-build-log
+          path: driver-build.log
+          if-no-files-found: ignore
