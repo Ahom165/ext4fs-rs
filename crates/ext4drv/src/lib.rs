@@ -181,7 +181,13 @@ unsafe extern "C" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
                 let _ = fsd::dismount(v, true);
             }
             core::ptr::drop_in_place(ext);
+            (*fsdev).DeviceExtension = core::ptr::null_mut();
         }
+        // Suppression du device FS : SANS ce IoDeleteDevice, DriverObject->
+        // DeviceObject reste non vide après DriverUnload et l'I/O manager
+        // REFUSE le déchargement (sc stop reste RUNNING/STOP_PENDING, le
+        // fichier .sys reste verrouillé, réinstallation impossible sans reboot).
+        IoDeleteDevice(fsdev as *mut DEVICE_OBJECT);
     }
     fsd::set_fs_device(core::ptr::null_mut());
 
