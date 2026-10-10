@@ -31,10 +31,19 @@ if (-not (Test-Path $SysPath)) {
 $secPwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
 
 # 1. Certificat de test : reuse s'il existe deja, sinon cree + exporte en PFX
-$signCert = Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My, `
-    Cert:\LocalMachine\TrustedPublisher -ErrorAction SilentlyContinue |
-    Where-Object { $_.Subject -eq "CN=$CertName" -and $_.HasPrivateKey } |
-    Sort-Object NotAfter -Descending | Select-Object -First 1
+# Ordre deterministe : on prefere la copie d'origine CurrentUser\My (cle
+# EXPORTABLE, creee par New-SelfSignedCertificate) aux copies importees dans
+# les magasins machine (cle NON exportable par defaut apres Import-PfxCertificate).
+# Toutes les copies ont le meme NotAfter : un tri global etait un ex aequo et
+# pouvait retourner la copie machine -> "Impossible d'exporter une cle privee
+# non exportable" au moment du backup PFX.
+$signCert = $null
+foreach ($store in @("Cert:\CurrentUser\My", "Cert:\LocalMachine\My", "Cert:\LocalMachine\TrustedPublisher")) {
+    $signCert = Get-ChildItem $store -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -eq "CN=$CertName" -and $_.HasPrivateKey } |
+        Sort-Object NotAfter -Descending | Select-Object -First 1
+    if ($signCert) { break }
+}
 
 if ($signCert) {
     Write-Host "== Certificat existant trouve : $($signCert.Thumbprint) ==" -ForegroundColor Cyan
@@ -53,10 +62,16 @@ if ($signCert) {
     Write-Host "Certificat cree : $($signCert.Thumbprint)"
 }
 
-# PFX de secours (backup) : re-exporte s'il manque
+# PFX de secours (backup) : re-exporte s'il manque. NON BLOQUANT : la signature
+# n'a pas besoin du PFX ; si la copie trouvee a une cle non exportable, on
+# continue simplement (le certificat est deja dans les magasins de toute facon).
 if (-not (Test-Path $PfxPath)) {
-    Export-PfxCertificate -Cert $signCert -FilePath $PfxPath -Password $secPwd | Out-Null
-    Write-Host "Certificat exporte : $PfxPath (mot de passe : $PfxPassword)"
+    try {
+        Export-PfxCertificate -Cert $signCert -FilePath $PfxPath -Password $secPwd | Out-Null
+        Write-Host "Certificat exporte : $PfxPath (mot de passe : $PfxPassword)"
+    } catch {
+        Write-Host "Note : PFX de secours non cree (cle non exportable sur cette copie du certificat) - sans impact sur la signature." -ForegroundColor Yellow
+    }
 }
 
 # 2. Installation dans LocalMachine Root + TrustedPublisher (idempotent)
