@@ -25,12 +25,14 @@ pub struct VolumeRegistry {
     // pointeur brut (ExAcquireFastMutex) — cohérent avec `inner`.
     mutex: UnsafeCell<FAST_MUTEX>,
     inner: UnsafeCell<RegistryInner>,
-    next_id: u32,
 }
 
 struct RegistryInner {
     volumes: BTreeMap<u32, Volume>,
     open_count: usize, // handles ouverts sur le device de contrôle
+    // next_id vit dans RegistryInner (derrière UnsafeCell) : mount() prend
+    // &self mais doit incrémenter le compteur sous FAST_MUTEX.
+    next_id: u32,
 }
 
 unsafe impl Sync for VolumeRegistry {}
@@ -46,8 +48,8 @@ impl VolumeRegistry {
             inner: UnsafeCell::new(RegistryInner {
                 volumes: BTreeMap::new(),
                 open_count: 0,
+                next_id: 1,
             }),
-            next_id: 1,
         }
     }
 
@@ -97,8 +99,8 @@ impl VolumeRegistry {
         let id = unsafe {
             ExAcquireFastMutex(self.mutex.get());
             let inner = &mut *self.inner.get();
-            let id = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1);
+            let id = inner.next_id;
+            inner.next_id = inner.next_id.wrapping_add(1);
             inner.volumes.insert(id, Volume { id, read_only: ro, fs });
             ExReleaseFastMutex(self.mutex.get());
             id
