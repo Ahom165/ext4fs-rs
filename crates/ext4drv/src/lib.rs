@@ -216,6 +216,23 @@ pub unsafe extern "system" fn dispatch_control(
     irp: PIRP,
 ) -> i32 {
     let stack: *mut wdk_sys::IO_STACK_LOCATION = (*irp).Tail.Overlay.__bindgen_anon_2.__bindgen_anon_1.CurrentStackLocation;
+
+    // CREATE/CLOSE/CLEANUP sur le device de contrôle : succès simple.
+    // Bug corrigé : CreateFile(\\.\Ext4Fs) envoyait MJ_CREATE ici ; l'ancien
+    // code lisait directement DeviceIoControl.IoControlCode (union : champ
+    // non valide hors MJ_DEVICE_CONTROL), tombait dans le bras
+    // `_ => INVALID_DEVICE_REQUEST` et l'ouverture échouait en erreur Win32 1
+    // (ERROR_INVALID_FUNCTION). Même modèle que le device FS (fsd.rs).
+    let major = fsd_types::sp_major(stack);
+    if major == nd::MJ_CREATE || major == nd::MJ_CLOSE || major == nd::MJ_CLEANUP {
+        complete(irp, 0, 0);
+        return 0;
+    }
+    if major != nd::MJ_DEVICE_CONTROL {
+        complete(irp, nd::st::INVALID_DEVICE_REQUEST, 0);
+        return nd::st::INVALID_DEVICE_REQUEST;
+    }
+
     let code = (*stack).Parameters.DeviceIoControl.IoControlCode;
     let in_len = (*stack).Parameters.DeviceIoControl.InputBufferLength as usize;
     let out_len = (*stack).Parameters.DeviceIoControl.OutputBufferLength as usize;

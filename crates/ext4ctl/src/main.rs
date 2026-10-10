@@ -376,9 +376,35 @@ fn main() {
     if args.is_empty() {
         usage();
     }
-    let h = driver_handle();
     let cmd = args[0].as_str();
     let rest = &args[1..];
+    // Commandes qui ne parlent PAS au device de contrôle \\.\Ext4Fs : pas
+    // d'ouverture de handle (elles fonctionnent même pilote arrêté, et une
+    // erreur d'ouverture ne doit pas masquer leur propre diagnostic).
+    match cmd {
+        // --- commandes FSD (phase 2) : pas d'IOCTL, manipulation Win32 directe
+        "fsd-mount" => {
+            cmd_fsd_mount(rest);
+            return;
+        }
+        "fsd-unmount" => {
+            cmd_fsd_unmount(rest);
+            return;
+        }
+        // alias "status" : l'utilisateur tape naturellement "status" alors que
+        // la commande documentée est "fsd-status"
+        "fsd-status" | "status" => {
+            cmd_fsd_status(rest);
+            return;
+        }
+        // --- formatage user-mode (volume brut verrouillé + moteur mkfs)
+        "format" => {
+            format::cmd_format(rest);
+            return;
+        }
+        _ => {}
+    }
+    let h = driver_handle();
     match cmd {
         "mount" => cmd_mount(h, rest),
         "umount" => cmd_umount(h, rest),
@@ -391,12 +417,6 @@ fn main() {
         "mkdir" => cmd_simple_path(h, IOCTL_EXT4_MKDIR, rest, "mkdir"),
         "rm" => cmd_simple_path(h, IOCTL_EXT4_UNLINK, rest, "rm"),
         "rmdir" => cmd_simple_path(h, IOCTL_EXT4_RMDIR, rest, "rmdir"),
-        // --- commandes FSD (phase 2) : pas d'IOCTL, manipulation Win32 directe
-        "fsd-mount" => cmd_fsd_mount(rest),
-        "fsd-unmount" => cmd_fsd_unmount(rest),
-        "fsd-status" => cmd_fsd_status(rest),
-        // --- formatage user-mode (volume brut verrouillé + moteur mkfs)
-        "format" => format::cmd_format(rest),
         _ => usage(),
     }
     unsafe {
